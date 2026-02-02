@@ -37,18 +37,75 @@ class ActionScript(BaseModel):
     explanation: str
     actions: List[Action]
 
+def mock_stockfish_analysis(board: chess.Board):
+    """Fallback evaluator when Stockfish is unavailable or hits errors"""
+    # Simple material-based evaluation
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0
+    }
+
+    score = 0
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            value = piece_values[piece.piece_type]
+            score += value if piece.color == chess.WHITE else -value
+
+    # Adjust score based on turn
+    if board.turn == chess.BLACK:
+        score = -score
+
+    # Get a legal move (preferably capture or center control)
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        return None, score
+
+    # Prioritize captures, then center moves
+    best_move = None
+    for move in legal_moves:
+        if board.is_capture(move):
+            best_move = move
+            break
+
+    if not best_move:
+        center_squares = [chess.E4, chess.D4, chess.E5, chess.D5]
+        for move in legal_moves:
+            if move.to_square in center_squares:
+                best_move = move
+                break
+
+    if not best_move:
+        best_move = legal_moves[0]
+
+    return best_move, score
+
 @app.post("/ask", response_model=ActionScript)
 async def ask_coach(request: ChatRequest):
     engine = None
+    best_move = None
+    score = 0.0
+
     try:
-        # A. Stockfish Analysis
-        engine_path = os.getenv("STOCKFISH_PATH", "/usr/local/bin/stockfish")
-        engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+        # A. Stockfish Analysis (with fallback)
         board = chess.Board(request.fen)
 
-        info = engine.analyse(board, chess.engine.Limit(time=0.1))
-        best_move = info["pv"][0]
-        score = info["score"].relative.score(mate_score=10000) / 100.0
+        try:
+            engine_path = os.getenv("STOCKFISH_PATH", "/usr/local/bin/stockfish")
+            engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+            info = engine.analyse(board, chess.engine.Limit(time=0.1))
+            best_move = info["pv"][0]
+            score = info["score"].relative.score(mate_score=10000) / 100.0
+        except Exception as stockfish_error:
+            # Fallback to mock evaluator
+            print(f"Stockfish unavailable: {stockfish_error}. Using mock evaluator.")
+            best_move, score = mock_stockfish_analysis(board)
+            if best_move is None:
+                best_move = "e2e4"  # Default opening move
 
         # B. Gemini Action Script Generation
         move_history = " ".join(request.history) if request.history else "No moves yet"

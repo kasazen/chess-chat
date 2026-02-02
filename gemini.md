@@ -9,12 +9,18 @@
 - **SDK**: Use `google-genai` (2026 SDK) with `client.models.generate_content`.
 - **State Sovereignty**: The React `useRef` (`gameRef`) is the absolute source of truth. Standard `useState` is for UI rendering ONLY.
 - **Action Script Protocol**: You MUST respond in strict JSON ActionScript format.
+  ```json
   {
     "explanation": "Conversational coach text",
     "actions": [
-      { "type": "move" | "undo" | "reset" | "highlight", "lan": "e2e4", "text": "Step commentary" }
+      { "type": "move", "lan": "e2e4", "comment": "Step commentary" },
+      { "type": "undo", "comment": "Revert last move" },
+      { "type": "reset", "comment": "Start new game" },
+      { "type": "highlight", "square": "e4", "intent": "bestMove" | "threat" | "info", "comment": "Visual square highlight" },
+      { "type": "arrow", "from": "g1", "to": "f3", "intent": "idea" | "threat", "comment": "Visual arrow for a plan" }
     ]
   }
+  ```
 
 ## 3. Universal Test Suite (The "Sovereign" Benchmarks)
 To ensure "Omnipotence," all updates must pass these high-breadth test categories:

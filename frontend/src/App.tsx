@@ -2,15 +2,33 @@ import { useState, useRef, useEffect } from 'react';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 
+const CHESS_THEME = {
+  colors: {
+    bestMove: 'rgba(46, 139, 87, 0.5)',   // SeaGreen
+    threat: 'rgba(178, 34, 34, 0.5)',      // Firebrick
+    info: 'rgba(255, 255, 0, 0.4)',        // Yellow
+    idea: 'rgba(0, 191, 255, 0.5)',        // DeepSkyBlue
+  },
+  arrow: {
+    idea: '#00bfff',
+    threat: '#b22222'
+  }
+};
+
 interface Message {
   role: 'user' | 'ai';
   text: string;
-  type?: 'explanation' | 'move' | 'error';  // Distinguish message types
+  type?: 'explanation' | 'move' | 'error';
+  intent?: 'bestMove' | 'threat' | 'info' | 'idea';
 }
 
 interface Action {
-  type: 'move' | 'undo' | 'reset' | 'highlight';
+  type: 'move' | 'undo' | 'reset' | 'highlight' | 'arrow';
   lan?: string;
+  square?: string;
+  from?: string;
+  to?: string;
+  intent?: 'bestMove' | 'threat' | 'info' | 'idea';
   comment?: string;
 }
 
@@ -27,6 +45,9 @@ function App() {
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isAnimating, setIsAnimating] = useState(false);
+  const [actionQueue, setActionQueue] = useState<Action[]>([]);
+  const [customSquareStyles, setCustomSquareStyles] = useState<Record<string, React.CSSProperties>>({});
+  const [customArrows, setCustomArrows] = useState<Array<{ startSquare: string; endSquare: string; color: string }>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
@@ -34,7 +55,7 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Helper to get message styling based on type
+  // Helper to get message styling based on type and intent
   function getMessageStyle(message: Message) {
     if (message.role === 'user') {
       return {
@@ -44,33 +65,51 @@ function App() {
       };
     }
 
-    // AI messages - different styles based on type
+    // Base style for AI messages
+    let baseStyle: {
+      backgroundColor: string;
+      fontStyle: 'normal' | 'italic';
+      borderLeft: string;
+    } = {
+      backgroundColor: '#383838',
+      fontStyle: 'normal',
+      borderLeft: '3px solid #888'
+    };
+
+    // Type-specific styling
     switch (message.type) {
       case 'explanation':
-        return {
-          backgroundColor: '#2d5016',  // Dark green for explanations
-          fontStyle: 'normal' as const,
+        baseStyle = {
+          backgroundColor: '#2d5016',
+          fontStyle: 'normal',
           borderLeft: '3px solid #4CAF50'
         };
+        break;
       case 'move':
-        return {
-          backgroundColor: '#3a3a3a',  // Darker gray for moves
-          fontStyle: 'italic' as const,
+        baseStyle = {
+          backgroundColor: '#3a3a3a',
+          fontStyle: 'italic',
           borderLeft: '3px solid #888'
         };
+        break;
       case 'error':
-        return {
-          backgroundColor: '#5c1a1a',  // Dark red for errors
-          fontStyle: 'normal' as const,
+        baseStyle = {
+          backgroundColor: '#5c1a1a',
+          fontStyle: 'normal',
           borderLeft: '3px solid #f44336'
         };
-      default:
-        return {
-          backgroundColor: '#383838',  // Default AI color
-          fontStyle: 'normal' as const,
-          borderLeft: 'none'
-        };
+        break;
     }
+
+    // Intent-based styling coordination (overrides border color)
+    if (message.intent) {
+      return {
+        ...baseStyle,
+        borderLeft: `3px solid ${CHESS_THEME.colors[message.intent] || '#888'}`
+      };
+    }
+
+    return baseStyle;
   }
 
   // 1. Handle user moving a piece on the board
@@ -114,6 +153,10 @@ function App() {
     setInput('');
     setIsTyping(true);
 
+    // Clear previous visual indicators
+    setCustomSquareStyles({});
+    setCustomArrows([]);
+
     try {
       const response = await fetch('http://localhost:8000/ask', {
         method: 'POST',
@@ -143,9 +186,9 @@ function App() {
 
       setIsTyping(false);
 
-      // Execute actions if they exist
+      // Populate the action queue (the useEffect will process them)
       if (data.actions && data.actions.length > 0) {
-        await performActions(data.actions);
+        setActionQueue(data.actions);
       }
 
     } catch (error) {
@@ -159,72 +202,81 @@ function App() {
     }
   }
 
-  // 4. Perform Actions (ref-based state guard)
-  async function performActions(actions: Action[]) {
-    if (!actions || actions.length === 0) return;
+  // 4. Action Queue Processor (useEffect-based)
+  useEffect(() => {
+    if (actionQueue.length === 0 || isAnimating) {
+      return;
+    }
 
-    setIsAnimating(true);
+    const processNextAction = async () => {
+      setIsAnimating(true);
 
-    for (const action of actions) {
+      const action = actionQueue[0];
       let success = true;
       let errorMsg = '';
 
       try {
         if (action.type === 'move' && action.lan) {
-          const from = action.lan.substring(0, 2);
-          const to = action.lan.substring(2, 4);
-          const promotion = action.lan.length > 4 ? action.lan[4] : 'q';
+          // Validate move is legal before attempting
+          const legalMoves = gameRef.current.moves({ verbose: true });
+          const isLegal = legalMoves.some(m => m.from + m.to === action.lan?.substring(0, 4));
+
+          if (!isLegal) {
+            throw new Error(`Illegal move suggested by AI: ${action.lan}`);
+          }
 
           const move = gameRef.current.move({
-            from,
-            to,
-            promotion: promotion as 'q' | 'r' | 'b' | 'n'
+            from: action.lan.substring(0, 2),
+            to: action.lan.substring(2, 4),
+            promotion: (action.lan.length > 4 ? action.lan[4] : 'q') as 'q' | 'r' | 'b' | 'n'
           });
 
-          if (!move) {
-            success = false;
-            errorMsg = `Illegal move: ${action.lan}`;
-          }
+          if (!move) throw new Error(`Move execution failed for: ${action.lan}`);
+
         } else if (action.type === 'undo') {
-          const undone = gameRef.current.undo();
-          if (!undone) {
-            success = false;
-            errorMsg = 'Cannot undo: no moves to undo';
-          }
+          if (!gameRef.current.undo()) throw new Error('No moves to undo.');
         } else if (action.type === 'reset') {
-          gameRef.current = new Chess();
-        } else if (action.type === 'highlight') {
-          // Highlight is visual-only, always succeeds
-          success = true;
+          gameRef.current.reset();
+        } else if (action.type === 'highlight' && action.square && action.intent) {
+          // Accumulate highlights for this turn
+          setCustomSquareStyles(prev => ({
+            ...prev,
+            [action.square!]: { backgroundColor: CHESS_THEME.colors[action.intent!] }
+          }));
+        } else if (action.type === 'arrow' && action.from && action.to && action.intent) {
+          // Accumulate arrows for this turn
+          const color = CHESS_THEME.arrow[action.intent === 'idea' ? 'idea' : 'threat'];
+          setCustomArrows(prev => [...prev, { startSquare: action.from!, endSquare: action.to!, color }]);
         }
-      } catch (e) {
+      } catch (e: any) {
         success = false;
-        errorMsg = `Error: ${e}`;
+        errorMsg = e.message;
       }
 
-      // Sync UI state with ref
+      // Update UI state
       setFen(gameRef.current.fen());
 
-      // Show action comment or error
+      // Post messages for commentary or errors with intent coordination
       if (success && action.comment) {
-        setMessages((prev) => [...prev, {
+        setMessages(prev => [...prev, {
           role: 'ai',
           text: action.comment || '',
-          type: 'move'
+          type: 'move',
+          intent: action.intent
         }]);
       } else if (!success) {
-        setMessages((prev) => [...prev, {
-          role: 'ai',
-          text: `Coach Error: ${errorMsg}`,
-          type: 'error'
-        }]);
+        setMessages(prev => [...prev, { role: 'ai', text: `Coach Error: ${errorMsg}`, type: 'error' }]);
       }
 
-      await new Promise(r => setTimeout(r, 1000));
-    }
+      // Wait for animation, then process next action
+      setTimeout(() => {
+        setIsAnimating(false);
+        setActionQueue(prevQueue => prevQueue.slice(1));
+      }, 1000);
+    };
 
-    setIsAnimating(false);
-  }
+    processNextAction();
+  }, [actionQueue, isAnimating]);
 
   return (
     <div style={{ 
@@ -255,7 +307,9 @@ function App() {
               boardOrientation: boardOrientation,
               darkSquareStyle: { backgroundColor: '#779556' },
               lightSquareStyle: { backgroundColor: '#ebecd0' },
-              allowDragging: !isAnimating
+              allowDragging: !isAnimating,
+              squareStyles: customSquareStyles,
+              arrows: customArrows
             }}
           />
         </div>

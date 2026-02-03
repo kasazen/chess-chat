@@ -8,16 +8,18 @@
 ## 2. Technical Handshake (2026 Standard)
 - **SDK**: Use `google-genai` (2026 SDK) with `client.models.generate_content`.
 - **State Sovereignty**: The React `useRef` (`gameRef`) is the absolute source of truth. Standard `useState` is for UI rendering ONLY.
-- **Action Script Protocol**: You MUST respond in strict JSON ActionScript format.
+- **Action Script Protocol**: You MUST respond in strict JSON ActionScript format. The AI must be "Turn-Aware" based on the FEN.
+
   ```json
   {
     "explanation": "Conversational coach text",
     "actions": [
-      { "type": "move", "lan": "e2e4", "comment": "Step commentary" },
+      { "type": "move", "san": "Nf3", "comment": "Physical move for the current turn" },
       { "type": "undo", "comment": "Revert last move" },
       { "type": "reset", "comment": "Start new game" },
       { "type": "highlight", "square": "e4", "intent": "bestMove" | "threat" | "info", "comment": "Visual square highlight" },
-      { "type": "arrow", "from": "g1", "to": "f3", "intent": "idea" | "threat", "comment": "Visual arrow for a plan" }
+      { "type": "arrow", "from": "g1", "to": "f3", "intent": "idea" | "threat", "comment": "Visual arrow for a plan" },
+      { "type": "ghost_move", "from": "d7", "to": "d5", "intent": "idea", "comment": "VISUAL ONLY move for the other side" }
     ]
   }
   ```

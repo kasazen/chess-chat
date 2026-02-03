@@ -1,253 +1,211 @@
 # AI Handoff Inbox
 
 ## [OPEN]
+- **Task**: Address Board Unresponsiveness, Apply Minor UI/Logic Refinements, and Verify Functionality
+- **From**: Lead System Architect
+- **To**: Claude Code (CI Agent)
+- **Document Type**: **Comprehensive Implementation & Verification Specification**
+- **Objective**: To fix the issue of the chessboard becoming unresponsive after AI processing, apply minor code improvements for clarity and robustness, and rigorously verify that all synchronization mechanisms are fully functional.
 
-## [COMPLETED]
-- **Task**: Implement Visual Layer for Highlights and Arrows.
-- **From**: Gemini (Architect)
-- **To**: Claude (Implementer)
-- **Status**: ✅ IMPLEMENTED & VERIFIED
-- **Files Modified**: `frontend/src/App.tsx`
-- **Build Status**: ✅ TypeScript compilation successful (308.04 kB)
+---
+### **Section 1: Problem Diagnosis & Context**
+---
 
-- **Implementation Summary**:
-    1. ✅ Defined CHESS_THEME object with coordinated colors for visual feedback
-    2. ✅ Added state for `customSquareStyles` and `customArrows`
-    3. ✅ Updated Action interface with `arrow` type and visual fields (square, from, to, intent)
-    4. ✅ Updated Message interface with `intent` field for chat coordination
-    5. ✅ Enhanced action queue processor to handle highlight and arrow actions
-    6. ✅ Implemented visual accumulation (multiple highlights/arrows per turn)
-    7. ✅ Coordinated chat bubble styling with board visuals via intent
-    8. ✅ Integrated squareStyles and arrows into Chessboard component
-    9. ✅ Added visual clearing on new message to prevent stale indicators
+**1.1. Board Unresponsiveness**:
+*   **Problem**: The chessboard remains unresponsive to user input (dragging pieces, clicking buttons) even after the AI has finished mentioning moves and the chat interface has updated.
+*   **Root Cause**: The `state.isAnimating` flag, which disables user interaction with the board, is not being reliably reset to `false`. This is due to a subtle logical flaw in the "Executor" `useEffect` within `frontend/src/App.tsx`. The `FINISH_ACTION_PROCESSING` action is dispatched when `state.actionQueue` becomes empty, but this can occur before the 750ms `isProcessingDelay` for the *last* action has completed. `isAnimating` is prematurely set to `false` while `isProcessingDelay` is still `true`, leading to an inconsistent state that isn't fully resolved.
 
-- **Visual Theme Capabilities**:
-    - **bestMove**: SeaGreen highlighting for optimal moves
-    - **threat**: Firebrick highlighting/arrows for tactical threats
-    - **info**: Yellow highlighting for educational markers
-    - **idea**: DeepSkyBlue highlighting/arrows for strategic concepts
-    - Chat bubbles automatically match board visual intent via borderLeft color
+**1.2. Minor Refinements**:
+These are minor, non-critical improvements identified during a code review for clarity, idiomatic usage, and future robustness. The core `useReducer` refactor is stable, and these changes are isolated refinements.
 
-- **Task**: Implement a robust Action Queue to resolve board/AI desync.
-- **From**: Gemini (Architect)
-- **To**: Claude (Implementer)
-- **Status**: ✅ IMPLEMENTED & VERIFIED
-- **Files Modified**:
-  - `frontend/src/App.tsx` (Action Queue implementation)
-  - `frontend/src/run-tests.js` (Test runner - NEW)
-- **Test Results**: ✅ 2/2 scenarios passed
-  - Butterfly Effect Test: PASSED (17 sequential operations including undos and variations)
-  - Underpromotion Test: PASSED (Knight promotion validation)
+---
+### **Section 2: Implementation Specification**
+---
 
-- **Implementation Summary**:
-    1. ✅ Added `actionQueue` state to hold incoming AI actions
-    2. ✅ Modified `sendMessage` to populate queue instead of calling `performActions`
-    3. ✅ Implemented `useEffect` hook that processes queue sequentially
-    4. ✅ Added move legality validation before execution
-    5. ✅ Removed old `performActions` function
-    6. ✅ UI locking during animation (via `isAnimating` state)
-    7. ✅ 1000ms delay between actions for visual feedback
-    8. ✅ Created test runner with Butterfly Effect and Underpromotion scenarios
+**2.1. Fix Board Unresponsiveness (Executor `useEffect` Logic)**
 
-- **Key Improvements**:
-    - Sequential action processing eliminates state desync
-    - Legal move validation prevents AI errors from corrupting game state
-    - Queue-based architecture supports complex undo/variation sequences
-    - gameRef remains single source of truth for chess logic
+*   **Location**: `frontend/src/App.tsx` - Locate the "Executor" `useEffect` (Hook 1), specifically the `if (state.actionQueue.length === 0)` block.
+*   **Action**: Modify the condition that triggers the `FINISH_ACTION_PROCESSING` dispatch. It should only be dispatched when *both* the `actionQueue` is empty *and* there is no ongoing `isProcessingDelay`.
 
-- **Task**: Finalize initial `GEMINI.md` logic.
-- **Status**: Verified by Gemini CLI.
-
-- **ARCHIVED Technical Implementation Details**:
-
-    The following sections contain the original implementation specifications.
-    They are preserved for reference but are no longer needed.
-
-    **Visual Layer - CHESS_THEME Object**:
-        -   At the top of `App.tsx`, create a constant `CHESS_THEME` to centralize colors for visual feedback.
+    *   **Before (Snippet - within "Executor" `useEffect`):**
         ```typescript
-        const CHESS_THEME = {
-          colors: {
-            bestMove: 'rgba(46, 139, 87, 0.5)',   // SeaGreen
-            threat: 'rgba(178, 34, 34, 0.5)',      // Firebrick
-            info: 'rgba(255, 255, 0, 0.4)',      // Yellow
-            idea: 'rgba(0, 191, 255, 0.5)',        // DeepSkyBlue
-          },
-          arrow: {
-            idea: '#00bfff',
-            threat: '#b22222'
-          }
-        };
-        ```
-
-    2.  **Add State for Board Visuals**:
-        -   Create two new state variables to hold the styles and arrows for `react-chessboard`.
-        ```typescript
-        const [customSquareStyles, setCustomSquareStyles] = useState<Record<string, React.CSSProperties>>({});
-        const [customArrows, setCustomArrows] = useState<[string, string, string][]>([]);
-        ```
-
-    3.  **Update `Action` and `Message` Interfaces**:
-        -   Update the `Action` interface to include the new fields from `GEMINI.md`.
-        -   Add an optional `intent` property to the `Message` interface for chat styling coordination.
-        ```typescript
-        interface Action {
-          type: 'move' | 'undo' | 'reset' | 'highlight' | 'arrow';
-          lan?: string;
-          square?: string;
-          from?: string;
-          to?: string;
-          intent?: 'bestMove' | 'threat' | 'info' | 'idea';
-          comment?: string;
-        }
-
-        interface Message {
-          role: 'user' | 'ai';
-          text: string;
-          type?: 'explanation' | 'move' | 'error';
-          intent?: Action['intent'];
-        }
-        ```
-
-    4.  **Enhance the Action Queue Processor (`useEffect`)**:
-        -   **Clear Visuals**: In the `sendMessage` function, right before the `fetch` call, reset the visual state to clear old highlights and arrows from the previous turn:
-            ```typescript
-            setCustomSquareStyles({});
-            setCustomArrows([]);
-            ```
-        -   **Process New Actions**: Inside the `useEffect` that processes `actionQueue`, add logic to handle `highlight` and `arrow` actions. These actions should *accumulate* visuals for the current turn.
-            ```typescript
-            // Inside the try block of processNextAction...
-            if (action.type === 'highlight' && action.square && action.intent) {
-              setCustomSquareStyles(prev => ({
-                ...prev,
-                [action.square!]: { backgroundColor: CHESS_THEME.colors[action.intent!] }
-              }));
-            } else if (action.type === 'arrow' && action.from && action.to && action.intent) {
-              const color = CHESS_THEME.arrow[action.intent === 'idea' ? 'idea' : 'threat'];
-              setCustomArrows(prev => [...prev, [action.from!, action.to!, color]]);
+          // Phase 1: Check for work
+          if (state.actionQueue.length === 0) {
+            // Transaction complete - release the lock if it was engaged
+            if (state.isAnimating) {
+              dispatch({ type: 'FINISH_ACTION_PROCESSING' });
             }
-            ```
-        -   **Tag Messages with Intent**: When processing an action with a comment, pass the `intent` to the message object.
-            ```typescript
-            // Inside the "Update UI and State" section of processNextAction...
-            if (success && action.comment) {
-                setMessages(prev => [...prev, {
-                  role: 'ai',
-                  text: action.comment,
-                  type: 'move', // or a new type 'visual'
-                  intent: action.intent 
-                }]);
-            }
-            ```
-
-    5.  **Coordinate Chat Bubble Style**:
-        -   Update the `getMessageStyle` function to use the `intent` from the message to color the chat bubble, matching the board visuals.
-        ```typescript
-        // Inside getMessageStyle, for AI messages...
-        if (message.intent) {
-          const baseStyle = getMessageStyle(message); // get default style
-          return {
-            ...baseStyle,
-            borderLeft: `3px solid ${CHESS_THEME.colors[message.intent] || '#888'}`
-          };
-        }
-        ```
-
-    6.  **Update Chessboard Component**:
-        -   Pass the new state variables as props to the `<Chessboard />` component.
-        -   `<Chessboard ... customSquareStyles={customSquareStyles} customArrows={customArrows} />` (Note: Ensure these are direct props, not inside an `options` object).
-
-- **Task**: Implement a robust Action Queue to resolve board/AI desync.
-- **From**: Gemini (Architect)
-- **To**: Claude (Implementer)
-- **Context**: The application is suffering from a state desynchronization issue where the UI (board) does not correctly reflect the sequence of operations sent by the AI coach. This is caused by React's asynchronous state updates firing all at once, rather than sequentially. The goal is to create a queue that processes each AI action one by one, ensuring animations complete before proceeding.
-- **File to Edit**: `frontend/src/App.tsx`
-- **Reference File**: `frontend/src/test-scenarios.js` (Contains the "Butterfly Effect" test case this fix must support).
-
-- **Technical Implementation Steps**:
-
-    1.  **Introduce an Action Queue State**:
-        -   In `App.tsx`, create a new state to hold the list of incoming actions from the AI.
-        -   `const [actionQueue, setActionQueue] = useState<Action[]>([]);`
-
-    2.  **Populate the Queue**:
-        -   In the `sendMessage` function, instead of directly calling `performActions`, populate the new state with the response from the backend.
-        -   `const data: ActionScript = await response.json();`
-        -   `if (data.actions && data.actions.length > 0) { setActionQueue(data.actions); }`
-        -   You can now remove the old `performActions` function.
-
-    3.  **Create a `useEffect` to Process the Queue**:
-        -   Create a `useEffect` hook that triggers whenever `actionQueue` changes.
-        -   This hook will be the "Director" that processes one action at a time.
-
-        ```typescript
-        useEffect(() => {
-          if (actionQueue.length === 0 || isAnimating) {
             return;
           }
-
-          const processNextAction = async () => {
-            setIsAnimating(true); // Lock the UI
-
-            const action = actionQueue[0];
-            let success = true;
-            let errorMsg = '';
-
-            // --- Action Processing Logic ---
-            // (This is the logic from the old performActions function)
-            try {
-              if (action.type === 'move' && action.lan) {
-                // IMPORTANT: Validate move is legal before attempting
-                const legalMoves = gameRef.current.moves({ verbose: true });
-                const isLegal = legalMoves.some(m => m.from + m.to === action.lan.substring(0,4));
-
-                if (!isLegal) {
-                    throw new Error(`Illegal move suggested by AI: ${action.lan}`);
-                }
-                
-                const move = gameRef.current.move(action.lan);
-                if (!move) throw new Error(`Move execution failed for: ${action.lan}`);
-
-              } else if (action.type === 'undo') {
-                if (!gameRef.current.undo()) throw new Error('No moves to undo.');
-              } else if (action.type === 'reset') {
-                gameRef.current.reset();
-              }
-              // Highlight is a visual-only instruction, no state change needed for the ref.
-            } catch (e: any) {
-              success = false;
-              errorMsg = e.message;
+        ```
+    *   **After (Snippet):**
+        ```typescript
+          // Phase 1: Check for work
+          // Only consider the transaction truly complete if actionQueue is empty AND no delay is active.
+          if (state.actionQueue.length === 0 && !state.isProcessingDelay) { // <-- MODIFIED CONDITION
+            // Transaction complete - release the lock if it was engaged
+            if (state.isAnimating) {
+              dispatch({ type: 'FINISH_ACTION_PROCESSING' });
             }
-
-            // --- Update UI and State ---
-            setFen(gameRef.current.fen()); // Update board UI
-
-            // Post messages for commentary or errors
-            if (success && action.comment) {
-                setMessages(prev => [...prev, { role: 'ai', text: action.comment, type: 'move' }]);
-            } else if (!success) {
-                setMessages(prev => [...prev, { role: 'ai', text: `Coach Error: ${errorMsg}`, type: 'error' }]);
-            }
-
-            // --- Recurse with Delay ---
-            // Wait for animation, then process the next item in the queue.
-            setTimeout(() => {
-              setIsAnimating(false); // Unlock UI for next action
-              setActionQueue(prevQueue => prevQueue.slice(1)); // Consume the action we just processed
-            }, 1000); // 1-second delay for animation
-          };
-
-          processNextAction();
-
-        }, [actionQueue, isAnimating]); // Dependency array
+            return;
+          }
         ```
 
-    4.  **Final Cleanup**:
-        -   Ensure the `isAnimating` state is used to disable user input on the board and in the chatbox while the queue is being processed.
-        -   Remove the old `performActions` function entirely.
-        -   Verify that manual moves made in `onDrop` still correctly use `gameRef.current` and `setFen` to keep the ref as the single source of truth.
+**2.2. Improve `Chessboard` Prop Passing (Clarity/Idiomatic Use)**
 
-## [COMPLETED]
-- **Task**: Finalize initial `GEMINI.md` logic.
-- **Status**: Verified by Gemini CLI.
+*   **Location**: `frontend/src/App.tsx` - Locate the `<Chessboard />` component within the main `App` return statement.
+*   **Action**: Modify the `<Chessboard />` component to pass its props directly as individual attributes, rather than as properties of a single `options` object.
+
+    *   **Before (Example Snippet):**
+        ```typescript
+        <Chessboard
+            options={{
+              position: state.boardRenderState.fen,
+              onPieceDrop: onDrop,
+              boardOrientation: boardOrientation,
+              darkSquareStyle: { backgroundColor: '#779556' },
+              lightSquareStyle: { backgroundColor: '#ebecd0' },
+              allowDragging: !state.isAnimating,
+              squareStyles: state.boardRenderState.squares,
+              arrows: state.boardRenderState.arrows,
+            }}
+          />
+        ```
+    *   **After (Example Snippet):**
+        ```typescript
+        <Chessboard
+            position={state.boardRenderState.fen}
+            onPieceDrop={onDrop}
+            boardOrientation={boardOrientation}
+            darkSquareStyle={{ backgroundColor: '#779556' }}
+            lightSquareStyle={{ backgroundColor: '#ebecd0' }}
+            allowDragging={!state.isAnimating}
+            customSquareStyles={state.boardRenderState.squares}
+            customArrows={state.boardRenderState.arrows}
+          />
+        ```
+        **Important Note:** The prop `squareStyles` should be changed to `customSquareStyles`, and `arrows` should be changed to `customArrows`. Ensure all other options are also converted to direct props.
+
+**2.3. Memoize `sendMessage` Function (Future Robustness)**
+
+*   **Location**: `frontend/src/App.tsx` - Locate the `sendMessage` async function definition.
+*   **Action**: Wrap the `sendMessage` function definition in a `useCallback` hook. Ensure all its dependencies (any state variables, props, or functions from the component's scope that `sendMessage` uses) are correctly listed in the `useCallback`'s dependency array.
+
+    *   **Before (Snippet - partial):**
+        ```typescript
+        // ...
+        const sendMessage = async (messageOverride?: string) => {
+          const messageToSend = messageOverride || input;
+          if (!messageToSend.trim() || state.isAnimating) return;
+          // ... function body ...
+        };
+        // ...
+        ```
+    *   **After (Snippet - partial, showing useCallback and example dependencies):**
+        ```typescript
+        // ...
+        const sendMessage = useCallback(async (messageOverride?: string) => {
+          const messageToSend = messageOverride || input;
+          if (!messageToSend.trim() || state.isAnimating) return;
+          // ... function body ...
+        }, [input, state.isAnimating, useMockData, state.messages, dispatch, gameRef.current, parseSanToSquares, CHESS_THEME /* ADD ALL OTHER DEPENDENCIES HERE */]);
+        // ...
+        ```
+        **Important Note**: Carefully identify and list *all* dependencies of the `sendMessage` function. Missing dependencies will lead to stale closures and bugs. These dependencies include `input`, `state.isAnimating`, `useMockData`, `state.messages`, `dispatch`, `gameRef.current`, `parseSanToSquares`, and `CHESS_THEME`.
+
+---
+### **Section 3: Strict Guardrails & Verification**
+---
+
+*   **GUARDRAIL**: You MUST make **ONLY** the changes specified in Section 2. No other code should be modified unless it is a direct consequence of these changes (e.g., import updates).
+*   **GUARDRAIL**: You MUST **NOT** alter the core `useReducer` implementation (i.e., the `appReducer` function itself), `AppState`, or `ReducerAction` types beyond what is strictly necessary for the fixes in Section 2.
+*   **GUARDRAIL**: You MUST **NOT** introduce any new features or change existing functionality beyond these specific refinements.
+
+**Verification Steps (Execute in order until successful):**
+
+1.  **Automated Test - Causal Chain (`test-causal-chain.test.ts`)**:
+    *   **Command**: `npx playwright test frontend/scripts/test-causal-chain.test.ts`
+    *   **Expected Outcome**: This test **MUST PASS**. It is specifically designed to detect the board-chat desynchronization; a pass here confirms the fix to the `useReducer` logic.
+
+2.  **Automated Test - Visual Desync (`test-visual-desync.test.ts`)**:
+    *   **Command**: `npx playwright test frontend/scripts/test-visual-desync.test.ts`
+    *   **Expected Outcome**: This test **MUST FAIL** with a visual difference error (`toHaveScreenshot`). It is the "RED PHASE" test to prove the visual desync bug. Critically, it **MUST NOT** fail with a `TimeoutError` or any error during the initial `toBeVisible` checks. A failure on `toHaveScreenshot` confirms the animation lock is working correctly and the test is functional.
+
+3.  **Manual Verification (Board Responsiveness)**:
+    *   **Steps**:
+        1.  Start the application locally.
+        2.  Send a chat message that triggers multiple moves or actions (e.g., "London System" if that mock exists, or any message that causes the AI to respond with a sequence of actions).
+        3.  While the AI is "playing moves" (board is animating), attempt to drag pieces or click the "Send"/"Reset" buttons. They should be disabled/unresponsive.
+        4.  After all AI actions are completed and the "Playing moves..." indicator disappears, the board and buttons **MUST become responsive** again to user interaction.
+    *   **Expected Outcome**: The board and controls are correctly locked during AI animation and reliably unlocked upon completion.
+
+Once all verification steps pass as expected, the task is complete.
+
+---
+### **Section 4: Logging Requirements (fix1.md)**
+---
+
+You MUST create and maintain a detailed log file named `fix1.md` in the `postbox/` directory. This log will serve as a comprehensive record of your actions, decisions, and progress throughout this task. You must update `fix1.md` after *every significant step* (e.g., each file modification, each test run, each decision point).
+
+The `fix1.md` log MUST include the following details, formatted in Markdown:
+
+*   **Timestamp**: `YYYY-MM-DD HH:MM:SS` (e.g., `2026-02-03 14:30:00`) for every entry.
+*   **Current Goal/Subtask**: Briefly state what you are currently trying to achieve (e.g., "Implementing Chessboard prop passing," "Running Causal Chain test").
+*   **Action Taken**: Describe the action performed.
+    *   **File Modifications**:
+        *   Specify file path.
+        *   Provide `diff` output (if possible and concise) or "before" and "after" code snippets for clarity.
+        *   Explain *why* this modification aligns with the `Implementation Specification`.
+    *   **Tool Usage**:
+        *   Command executed (e.g., `read_file`, `replace`, `run_shell_command`).
+        *   Any relevant arguments.
+    *   **Decision Points**:
+        *   If there are multiple ways to implement something (e.g., how to list dependencies for `useCallback`), describe the options considered and explain your rationale for the chosen path. Reference `gemini.md` or other guidelines if applicable.
+*   **Test Commands & Results**:
+    *   **Command**: The exact `run_shell_command` executed (e.g., `npx playwright test frontend/scripts/test-causal-chain.test.ts`).
+    *   **Output**: The full, raw output of the command.
+    *   **Analysis**: Interpret the test results (PASS/FAIL, specific error messages, relevant lines from stack traces). Explain how the results compare to the "Expected Outcome" in Section 3.
+*   **Iterations/Retries**: If a step requires multiple attempts (e.g., fixing a syntax error, adjusting a dependency list), document each attempt and its outcome.
+*   **Progress Summary**: A brief statement on the overall progress after a set of actions is completed.
+
+**Example `fix1.md` Entry Format:**
+
+```markdown
+### 2026-02-03 14:35:10 - Starting Task: Fix Board Unresponsiveness
+
+**Current Goal/Subtask**: Applying fix for `isAnimating` logic in Executor useEffect.
+
+**Action Taken**:
+- Reading `frontend/src/App.tsx` to locate Executor useEffect.
+  ```json
+  {"tool_code": "read_file(file_path='frontend/src/App.tsx')"}
+  ```
+  *(... full file content ...)*
+
+**Action Taken**:
+- Modifying `frontend/src/App.tsx` to update the condition for `FINISH_ACTION_PROCESSING` dispatch.
+- **Rationale**: Aligns with Section 2.1 of todo.md, correcting the timing of the animation lock release.
+
+  ```diff
+  --- a/frontend/src/App.tsx
+  +++ b/frontend/src/App.tsx
+  @@ -647,7 +647,7 @@
+     // Phase 1: Check for work
+     // Only consider the transaction truly complete if actionQueue is empty AND no delay is active.
+  -  if (state.actionQueue.length === 0) {
+  +  if (state.actionQueue.length === 0 && !state.isProcessingDelay) { // <-- MODIFIED CONDITION
+       // Transaction complete - release the lock if it was engaged
+       if (state.isAnimating) {
+         dispatch({ type: 'FINISH_ACTION_PROCESSING' });
+  ```
+
+**Test Commands & Results**:
+- **Command**: `npx playwright test frontend/scripts/test-causal-chain.test.ts`
+  ```json
+  {"tool_code": "run_shell_command(command='npx playwright test frontend/scripts/test-causal-chain.test.ts', dir_path='frontend/')"}
+  ```
+  *(... full test output ...)*
+- **Analysis**: The test PASSED. This confirms the fix for `isAnimating` correctly resolved the desynchronization detected by this test, as expected by Section 3.1.
+
+**Progress Summary**: The board unresponsiveness fix has been implemented and successfully verified by the `test-causal-chain.test.ts`. Proceeding to minor refinements.
+```

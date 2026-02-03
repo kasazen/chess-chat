@@ -1,0 +1,41 @@
+{
+  "London System": {
+    "explanation": "This is the Jobava London System.",
+    "actions": [
+      { "type": "move", "san": "d4" },
+      { "type": "move", "san": "Nf6" },
+      { "type": "move", "san": "Nc3" },
+      { "type": "move", "san": "d5" },
+      { "type": "move", "san": "Bf4" }
+    ]
+  },
+  "Illegal Move Test": {
+    "explanation": "I will now demonstrate the illegal move Nf3.",
+    "actions": [
+      { "type": "move", "san": "Nf3", "comment": "This illegal move should become a visual arrow from g1 to f3." }
+    ]
+  },
+  "What's the plan for White here?": {
+    "explanation": "White should focus on central control and piece development.",
+    "actions": [
+      { "type": "highlight", "square": "e4", "intent": "bestMove", "comment": "Control the center with e4" },
+      { "type": "highlight", "square": "d4", "intent": "bestMove", "comment": "Support with d4" },
+      { "type": "arrow", "from": "g1", "to": "f3", "intent": "idea", "comment": "Develop the knight to f3" }
+    ]
+  },
+  "Show me a tactic for Black.": {
+    "explanation": "Black can exploit White's weak kingside with a forcing sequence.",
+    "actions": [
+      { "type": "arrow", "from": "f6", "to": "g4", "intent": "threat", "comment": "Ng4 attacks f2" },
+      { "type": "highlight", "square": "f2", "intent": "threat", "comment": "f2 is vulnerable" },
+      { "type": "ghost_move", "from": "f6", "to": "g4", "intent": "threat", "comment": "Visualizing the attacking move" }
+    ]
+  },
+  "Undo my last move and suggest something else.": {
+    "explanation": "Let me undo that move and suggest an alternative.",
+    "actions": [
+      { "type": "undo", "comment": "Undoing your last move" },
+      { "type": "move", "san": "Nf3", "comment": "Consider developing your knight instead" }
+    ]
+  }
+}

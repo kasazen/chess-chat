@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useReducer, useCallback } from 'react';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
+import mockResponses from '../tests/mocks/responses.json';
 
 const CHESS_THEME = {
   colors: {
@@ -23,11 +24,11 @@ interface Message {
 }
 
 interface Action {
-  type: 'move' | 'undo' | 'reset' | 'highlight' | 'arrow';
-  lan?: string;
-  square?: string;
-  from?: string;
-  to?: string;
+  type: 'move' | 'undo' | 'reset' | 'highlight' | 'arrow' | 'ghost_move';
+  san?: string;  // Standard Algebraic Notation for real moves
+  square?: string;  // For highlight actions
+  from?: string;  // For arrow and ghost_move actions
+  to?: string;  // For arrow and ghost_move actions
   intent?: 'bestMove' | 'threat' | 'info' | 'idea';
   comment?: string;
 }
@@ -37,23 +38,414 @@ interface ActionScript {
   actions: Action[];
 }
 
+// Consolidated Board Render State (Section 2.1)
+interface BoardRenderState {
+  fen: string;
+  arrows: Array<{ startSquare: string; endSquare: string; color: string }>;
+  squares: Record<string, React.CSSProperties>;
+}
+
+// Master application state interface
+interface AppState {
+  boardRenderState: BoardRenderState;
+  messages: Message[];
+  isTyping: boolean;
+  isAnimating: boolean;
+  isProcessingDelay: boolean;
+  untrustedActionQueue: Action[];
+  actionQueue: Action[];
+}
+
+// Reducer action types
+type ReducerAction =
+  | { type: 'START_SEND_MESSAGE'; payload: { userMessage: Message } }
+  | { type: 'RECEIVE_AI_EXPLANATION'; payload: { explanation: string; actions: Action[] } }
+  | { type: 'PROCESS_ACTION'; payload: { fen: string; arrows: Array<{ startSquare: string; endSquare: string; color: string }>; squares: Record<string, React.CSSProperties>; comment?: string; intent?: Action['intent'] } }
+  | { type: 'START_PROCESSING_DELAY' }
+  | { type: 'END_PROCESSING_DELAY' }
+  | { type: 'REMOVE_FIRST_ACTION' }
+  | { type: 'FINISH_ACTION_PROCESSING' }
+  | { type: 'HANDLE_SEND_ERROR'; payload: string }
+  | { type: 'RESET_GAME'; payload: { fen: string } }
+  | { type: 'SET_UNTRUSTED_QUEUE'; payload: Action[] }
+  | { type: 'SET_ACTION_QUEUE'; payload: Action[] }
+  | { type: 'CLEAR_BOARD_VISUALS' };
+
+// Application state reducer
+function appReducer(state: AppState, action: ReducerAction): AppState {
+  switch (action.type) {
+    case 'START_SEND_MESSAGE':
+      return {
+        ...state,
+        messages: [...state.messages, action.payload.userMessage],
+        isTyping: true,
+        isAnimating: true,
+      };
+
+    case 'RECEIVE_AI_EXPLANATION':
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            role: 'ai',
+            text: action.payload.explanation,
+            type: 'explanation'
+          }
+        ],
+        isTyping: false,
+        untrustedActionQueue: action.payload.actions,
+      };
+
+    case 'SET_UNTRUSTED_QUEUE':
+      return {
+        ...state,
+        untrustedActionQueue: action.payload,
+      };
+
+    case 'SET_ACTION_QUEUE':
+      return {
+        ...state,
+        actionQueue: action.payload,
+      };
+
+    case 'CLEAR_BOARD_VISUALS':
+      return {
+        ...state,
+        boardRenderState: {
+          ...state.boardRenderState,
+          arrows: [],
+          squares: {},
+        },
+      };
+
+    case 'PROCESS_ACTION':
+      // ATOMIC UPDATE: Board state and message updated together
+      return {
+        ...state,
+        boardRenderState: {
+          fen: action.payload.fen,
+          arrows: action.payload.arrows,
+          squares: action.payload.squares,
+        },
+        messages: action.payload.comment
+          ? [
+              ...state.messages,
+              {
+                role: 'ai',
+                text: action.payload.comment,
+                type: 'move',
+                intent: action.payload.intent,
+              },
+            ]
+          : state.messages,
+      };
+
+    case 'REMOVE_FIRST_ACTION':
+      return {
+        ...state,
+        actionQueue: state.actionQueue.slice(1),
+      };
+
+    case 'START_PROCESSING_DELAY':
+      return {
+        ...state,
+        isProcessingDelay: true,
+      };
+
+    case 'END_PROCESSING_DELAY':
+      return {
+        ...state,
+        isProcessingDelay: false,
+      };
+
+    case 'FINISH_ACTION_PROCESSING':
+      return {
+        ...state,
+        isAnimating: false,
+      };
+
+    case 'HANDLE_SEND_ERROR':
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            role: 'ai',
+            text: action.payload,
+            type: 'error',
+          },
+        ],
+        isTyping: false,
+      };
+
+    case 'RESET_GAME':
+      return {
+        ...state,
+        boardRenderState: {
+          fen: action.payload.fen,
+          arrows: [],
+          squares: {},
+        },
+        messages: [],
+        actionQueue: [],
+        untrustedActionQueue: [],
+        isAnimating: false,
+      };
+
+    default:
+      return state;
+  }
+}
+
+const promptPills = [
+  { label: "Plan for White", prompt: "What's the plan for White here?" },
+  { label: "Black's Tactic", prompt: "Show me a tactic for Black." },
+  { label: "Undo & Suggest", prompt: "Undo my last move and suggest something else." },
+];
+
 function App() {
   const gameRef = useRef(new Chess());
-  const [fen, setFen] = useState(gameRef.current.fen());
+  console.log('App init: typeof gameRef.current.isGameOver', typeof gameRef.current.isGameOver);
+
+  // Initialize reducer state
+  const initialState: AppState = {
+    boardRenderState: {
+      fen: gameRef.current.fen(),
+      arrows: [],
+      squares: {},
+    },
+    messages: [],
+    isTyping: false,
+    isAnimating: false,
+    isProcessingDelay: false,
+    untrustedActionQueue: [],
+    actionQueue: [],
+  };
+
+  const [state, dispatch] = useReducer(appReducer, initialState);
+
+  // Simple, non-related state variables remain as useState
   const [boardOrientation] = useState<'white' | 'black'>('white');
-  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [actionQueue, setActionQueue] = useState<Action[]>([]);
-  const [customSquareStyles, setCustomSquareStyles] = useState<Record<string, React.CSSProperties>>({});
-  const [customArrows, setCustomArrows] = useState<Array<{ startSquare: string; endSquare: string; color: string }>>([]);
+  const [useMockData, setUseMockData] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Ref for sendMessage function to expose stable test hook
+  const sendMessageRef = useRef<((msg?: string) => Promise<void>) | undefined>(undefined);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [state.messages]);
+
+  // Test backdoor for Playwright behavioral testing
+  useEffect(() => {
+    // Always expose test vars in development/test mode
+    (window as any).__test_vars = {
+      game: gameRef.current,
+      gameRef: gameRef,
+      customArrows: state.boardRenderState.arrows,
+      fen: state.boardRenderState.fen,
+      isAnimating: state.isAnimating,
+      actionQueue: state.actionQueue,
+      // Stable test hook for triggering AI responses
+      sendMessage: (msg: string) => sendMessageRef.current?.(msg),
+      // NEW DEBUG HOOK: Get full Chess.js state from App's context
+      getChessDebugState: () => {
+        const game = gameRef.current;
+        console.log('DEBUG inside App.tsx getChessDebugState: game object:', game);
+        console.log('DEBUG inside App.tsx getChessDebugState: typeof game:', typeof game);
+        console.log('DEBUG inside App.tsx getChessDebugState: game.constructor.name:', game?.constructor?.name);
+        console.log('DEBUG inside App.tsx getChessDebugState: Object.getPrototypeOf(game):', Object.getPrototypeOf(game));
+        console.log('DEBUG inside App.tsx getChessDebugState: game.fen is a function:', typeof game?.fen === 'function');
+        console.log('DEBUG inside App.tsx getChessDebugState: game.isGameOver is a function:', typeof game?.isGameOver === 'function');
+
+        let dummyMoveAttempt = { success: false, reason: '' };
+        try {
+          const tempGameForMoveTest = new Chess(game.fen()); // Create a temp game for move test
+          const testMove = tempGameForMoveTest.move('e2e4'); // Try a standard opening move for white
+          dummyMoveAttempt = { success: !!testMove, reason: testMove ? 'Legal/successful' : 'Move returned null' };
+        } catch (e: any) {
+          dummyMoveAttempt = { success: false, reason: e.message };
+        }
+
+        let dummyMoveOnGameRefAttempt = { success: false, reason: '' };
+        try {
+          const testMove = game.move('e2e4'); // Try making a move DIRECTLY on gameRef.current
+          dummyMoveOnGameRefAttempt = { success: !!testMove, reason: testMove ? 'Legal/successful' : 'Move returned null' };
+        } catch (e: any) {
+          dummyMoveOnGameRefAttempt = { success: false, reason: e.message };
+        }
+
+
+        return {
+          fen: game.fen(),
+          // isGameOver: game.game_over(), // Commented out for debug isolation
+          // inCheckmate: game.in_checkmate(), // Commented out for debug isolation
+          // inDraw: game.in_draw(), // Commented out for debug isolation
+          // inThreefoldRepetition: game.in_threefold_repetition(), // Commented out for debug isolation
+          // inStalemate: game.in_stalemate(), // Commented out for debug isolation
+          turn: game.turn(),
+          dummyMoveAttempt,
+          dummyMoveOnGameRefAttempt, // NEW LOG
+        };
+      },
+    };
+  }, [state.boardRenderState, state.isAnimating, state.actionQueue, gameRef]);
+
+  // PHASE 1: Triage - Validate and transform untrusted actions
+  useEffect(() => {
+    console.log('[Triage useEffect] Triggered. Queue length:', state.untrustedActionQueue.length);
+
+    // Don't process during animation
+    if (state.isAnimating) {
+      console.log('[Triage] Skipping - animation in progress');
+      return;
+    }
+
+    if (state.untrustedActionQueue.length === 0) {
+      console.log('[Triage useEffect] Queue empty, returning');
+      return;
+    }
+
+    console.log('[Triage] Starting validation. Current FEN:', gameRef.current.fen());
+    const validatedActions: Action[] = [];
+    const tempGame = new Chess(gameRef.current.fen());
+
+    for (const action of state.untrustedActionQueue) {
+      console.log('[Triage] Processing action:', action);
+      if (action.type === 'move' && action.san) {
+        console.log('[Triage] Move action detected, san:', action.san);
+        // Dry-run the move against temp game state
+        let isValid;
+        try {
+          isValid = tempGame.move(action.san);
+          console.log('[Triage] Move result:', isValid);
+        } catch (error) {
+          console.error('[Triage] Error during move:', error);
+          isValid = null;
+        }
+
+        if (isValid) {
+          // Move is legal - pass through unchanged
+          console.log('[Triage] Move is LEGAL, passing through');
+          validatedActions.push(action);
+        } else {
+          // Move is illegal - transform to ghost_move for visual-only display
+          // Parse SAN to extract squares (simple approach for common cases)
+          console.log('[Triage] Illegal move detected:', action.san, 'Current turn:', tempGame.turn());
+          const from = parseSanToSquares(action.san, tempGame);
+          console.log('[Triage] Parsed squares:', from);
+          if (from) {
+            const ghostAction = {
+              type: 'ghost_move' as const,
+              from: from.from,
+              to: from.to,
+              intent: action.intent || 'idea' as const,
+              comment: action.comment ? `${action.comment} (visual-only)` : undefined
+            };
+            console.log('[Triage] Created ghost_move action:', ghostAction);
+            validatedActions.push(ghostAction);
+          } else {
+            console.log('[Triage] Failed to parse squares, dropping action');
+          }
+        }
+      } else if (action.type === 'undo') {
+        tempGame.undo();
+        validatedActions.push(action);
+      } else {
+        // Visual actions (highlight, arrow, ghost_move) pass through
+        validatedActions.push(action);
+      }
+    }
+
+    // Feed validated actions to execution phase
+    dispatch({ type: 'SET_ACTION_QUEUE', payload: validatedActions });
+    dispatch({ type: 'SET_UNTRUSTED_QUEUE', payload: [] });
+  }, [state.untrustedActionQueue, state.isAnimating]);
+
+  // Helper to parse SAN notation to from/to squares
+  function parseSanToSquares(san: string, game: Chess): { from: string; to: string } | null {
+    try {
+      // First try: Check if it's legal in current position
+      const moves = game.moves({ verbose: true });
+      for (const move of moves) {
+        if (move.san === san) {
+          return { from: move.from, to: move.to };
+        }
+      }
+
+      // Second try: Create a hypothetical game with flipped turn to extract squares
+      // This handles the case where AI suggests a move for the wrong player
+      const hypotheticalGame = new Chess(game.fen());
+
+      // Manually flip turn by modifying FEN
+      const fenParts = hypotheticalGame.fen().split(' ');
+      fenParts[1] = fenParts[1] === 'w' ? 'b' : 'w'; // Flip turn
+      const flippedFen = fenParts.join(' ');
+
+      try {
+        hypotheticalGame.load(flippedFen);
+        const hypotheticalMoves = hypotheticalGame.moves({ verbose: true });
+
+        for (const move of hypotheticalMoves) {
+          if (move.san === san) {
+            return { from: move.from, to: move.to };
+          }
+        }
+      } catch (e) {
+        // Flipped FEN might be invalid, continue to pattern matching
+      }
+
+      // Third try: Pattern matching for explicit square moves like "e2e4"
+      const explicitMatch = san.match(/([a-h][1-8]).*?([a-h][1-8])/);
+      if (explicitMatch) {
+        return { from: explicitMatch[1], to: explicitMatch[2] };
+      }
+
+      // Fourth try: For simple piece moves like "Nf3", extract destination
+      // and find a piece that could move there
+      const pieceMatch = san.match(/^([NBRQK])([a-h])?([1-8])?x?([a-h][1-8])/);
+      if (pieceMatch) {
+        const destSquare = pieceMatch[4];
+        const piece = pieceMatch[1];
+
+        // Find pieces of this type on the board
+        const board = game.board();
+        for (let rank = 0; rank < 8; rank++) {
+          for (let file = 0; file < 8; file++) {
+            const square = board[rank][file];
+            if (square && square.type.toUpperCase() === piece) {
+              const fromSquare = String.fromCharCode(97 + file) + (8 - rank);
+              // Return this as a potential source
+              // (In a real scenario, we'd check if the piece can actually reach the dest)
+              return { from: fromSquare, to: destSquare };
+            }
+          }
+        }
+      }
+
+      // Fifth try: Pawn moves like "e4"
+      const pawnMatch = san.match(/^([a-h])([1-8])$/);
+      if (pawnMatch) {
+        const file = pawnMatch[1];
+        const rank = parseInt(pawnMatch[2]);
+        const destSquare = file + rank;
+
+        // Pawn could come from one or two squares back
+        const fromRank = game.turn() === 'w' ? rank - 1 : rank + 1;
+        const fromSquare = file + fromRank;
+
+        return { from: fromSquare, to: destSquare };
+      }
+
+    } catch (e) {
+      console.error('Failed to parse SAN:', san, e);
+    }
+    return null;
+  }
 
   // Helper to get message styling based on type and intent
   function getMessageStyle(message: Message) {
@@ -113,8 +505,8 @@ function App() {
   }
 
   // 1. Handle user moving a piece on the board
-  function onDrop({ sourceSquare, targetSquare }: { sourceSquare: string; targetSquare: string | null }): boolean {
-    if (isAnimating || !targetSquare) return false;
+  function onDrop({ sourceSquare, targetSquare }: { piece: { isSparePiece: boolean; position: string; pieceType: string }; sourceSquare: string; targetSquare: string | null }): boolean {
+    if (state.isAnimating || !targetSquare) return false;
 
     try {
       const move = gameRef.current.move({
@@ -126,7 +518,14 @@ function App() {
       if (!move) return false;
 
       // Sync UI state with ref
-      setFen(gameRef.current.fen());
+      dispatch({
+        type: 'PROCESS_ACTION',
+        payload: {
+          fen: gameRef.current.fen(),
+          arrows: state.boardRenderState.arrows,
+          squares: state.boardRenderState.squares,
+        },
+      });
       return true;
     } catch (e) {
       return false;
@@ -135,161 +534,271 @@ function App() {
 
   // 2. Clear Board / New Game
   function resetGame() {
-    gameRef.current = new Chess();
-    setFen(gameRef.current.fen());
-    setMessages([]);
+    gameRef.current.reset();
+    dispatch({
+      type: 'RESET_GAME',
+      payload: { fen: gameRef.current.fen() }
+    });
   }
 
   // 3. Handle sending a message to the Backend
-  async function sendMessage() {
-    if (!input.trim() || isAnimating) return;
+  const sendMessage = useCallback(async (messageOverride?: string) => {
+    const messageToSend = messageOverride || input;
+    if (!messageToSend.trim() || state.isAnimating) return;
 
-    const userMsg: Message = { role: 'user', text: input };
-    setMessages((prev) => [...prev, userMsg]);
-    const currentInput = input;
+    const userMsg: Message = { role: 'user', text: messageToSend };
+    const currentInput = messageToSend;
     const currentFen = gameRef.current.fen();
     const moveHistory = gameRef.current.history();
 
     setInput('');
-    setIsTyping(true);
 
-    // Clear previous visual indicators
-    setCustomSquareStyles({});
-    setCustomArrows([]);
+    // STEP 1: Start send message - lock and add user message
+    dispatch({ type: 'START_SEND_MESSAGE', payload: { userMessage: userMsg } });
+    dispatch({ type: 'CLEAR_BOARD_VISUALS' });
 
     try {
-      const response = await fetch('http://localhost:8000/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fen: currentFen,
-          message: currentInput,
-          history: moveHistory
-        }),
-      });
+      let data: ActionScript;
+      const processedInput = currentInput.trim(); // Ensure input is trimmed for lookup
 
-      if (!response.ok) throw new Error('Backend not reachable');
+      if (useMockData) {
+        // Frontend-side mock interception
+        console.log('[Frontend Mock] Attempting to use mock data for scenario:', processedInput);
 
-      const data: ActionScript = await response.json();
+        // Handle module-style JSON import
+        let mockData = mockResponses as any;
+        if (mockData.default) {
+          mockData = mockData.default;
+        }
+
+        const mockResponse = mockData[processedInput]; // Use trimmed input as key
+        if (mockResponse) {
+          // Simulate network delay for better realism
+          await new Promise(resolve => setTimeout(resolve, 500));
+          data = mockResponse; // Direct assignment of mock data
+        } else {
+          // CRITICAL: Provide specific error for mock mode
+          throw new Error(`Mock scenario "${processedInput}" not found in responses.json.`);
+        }
+      } else {
+        // Proceed with actual API call
+        const response = await fetch('http://localhost:8000/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fen: currentFen,
+            message: currentInput,
+            history: moveHistory
+          }),
+        });
+
+        if (!response.ok) throw new Error('Backend not reachable');
+        data = await response.json();
+      }
+
+      console.log('[sendMessage] Received data:', data);
 
       // Validate response structure
       if (!data.explanation || !data.actions) {
+        console.error('[sendMessage] Invalid response structure:', data);
         throw new Error('Invalid response format from backend');
       }
 
-      // Show the explanation first
-      setMessages((prev) => [...prev, {
-        role: 'ai',
-        text: data.explanation,
-        type: 'explanation'
-      }]);
+      console.log('[sendMessage] Actions received:', data.actions);
 
-      setIsTyping(false);
+      // Dispatch AI explanation and actions
+      dispatch({
+        type: 'RECEIVE_AI_EXPLANATION',
+        payload: { explanation: data.explanation, actions: data.actions || [] }
+      });
 
-      // Populate the action queue (the useEffect will process them)
-      if (data.actions && data.actions.length > 0) {
-        setActionQueue(data.actions);
+    } catch (error: any) {
+      console.error("Error in sendMessage:", error);
+      let errorMessage = "I'm having trouble connecting to my brain. Please check if the backend server is running and your API key is correct.";
+
+      // Refined error message when in mock mode
+      if (useMockData && error.message.includes("Mock scenario")) {
+        errorMessage = `Mock Data Error: ${error.message} Please check frontend/tests/mocks/responses.json.`;
+      } else if (error.message.includes("Backend not reachable")) {
+        errorMessage = "Backend not reachable. Is the server running?";
       }
 
-    } catch (error) {
-      console.error("Connection Error:", error);
-      setMessages((prev) => [...prev, {
-        role: 'ai',
-        text: "I'm having trouble connecting to my brain. Please check if the backend server is running and your API key is correct.",
-        type: 'error'
-      }]);
-      setIsTyping(false);
+      dispatch({ type: 'HANDLE_SEND_ERROR', payload: errorMessage });
     }
-  }
+  }, [input, state.isAnimating, useMockData, dispatch, setInput, gameRef]);
 
-  // 4. Action Queue Processor (useEffect-based)
+  // Keep sendMessageRef updated with current sendMessage function
   useEffect(() => {
-    if (actionQueue.length === 0 || isAnimating) {
+    sendMessageRef.current = sendMessage;
+  }, [sendMessage]);
+
+  // STEP 3: Causal useEffect Chain (Section 2.2)
+
+  // Hook 1: The "Executor" useEffect
+  // Responsibility: Process actions and dispatch atomic state updates
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    // Phase 1: Check for work
+    if (state.actionQueue.length === 0 && !state.isProcessingDelay) { // <-- MODIFIED CONDITION
+      // Transaction complete - release the lock if it was engaged
+      if (state.isAnimating) {
+        dispatch({ type: 'FINISH_ACTION_PROCESSING' });
+      }
       return;
     }
 
-    const processNextAction = async () => {
-      setIsAnimating(true);
+    // Don't process if we're in the delay period between actions
+    if (state.isProcessingDelay) {
+      return;
+    }
 
-      const action = actionQueue[0];
-      let success = true;
-      let errorMsg = '';
+    // If we are here, there are actions to process
+    dispatch({ type: 'START_PROCESSING_DELAY' });
+    const action = state.actionQueue[0];
 
-      try {
-        if (action.type === 'move' && action.lan) {
-          // Validate move is legal before attempting
-          const legalMoves = gameRef.current.moves({ verbose: true });
-          const isLegal = legalMoves.some(m => m.from + m.to === action.lan?.substring(0, 4));
+    // Phase 2: Execute the action and prepare new board state
+    try {
+      let messageIntent: Action['intent'] | undefined;
+      let newArrows = [...state.boardRenderState.arrows];
+      let newSquares = { ...state.boardRenderState.squares };
 
-          if (!isLegal) {
-            throw new Error(`Illegal move suggested by AI: ${action.lan}`);
-          }
-
-          const move = gameRef.current.move({
-            from: action.lan.substring(0, 2),
-            to: action.lan.substring(2, 4),
-            promotion: (action.lan.length > 4 ? action.lan[4] : 'q') as 'q' | 'r' | 'b' | 'n'
+      if (action.type === 'move' && action.san) {
+        const move = gameRef.current.move(action.san);
+        if (!move) {
+          console.error(`Illegal move in Executor: ${action.san}`);
+          dispatch({
+            type: 'HANDLE_SEND_ERROR',
+            payload: `Invalid move attempted: ${action.san}. This action was skipped.`,
           });
-
-          if (!move) throw new Error(`Move execution failed for: ${action.lan}`);
-
-        } else if (action.type === 'undo') {
-          if (!gameRef.current.undo()) throw new Error('No moves to undo.');
-        } else if (action.type === 'reset') {
-          gameRef.current.reset();
-        } else if (action.type === 'highlight' && action.square && action.intent) {
-          // Accumulate highlights for this turn
-          setCustomSquareStyles(prev => ({
-            ...prev,
-            [action.square!]: { backgroundColor: CHESS_THEME.colors[action.intent!] }
-          }));
-        } else if (action.type === 'arrow' && action.from && action.to && action.intent) {
-          // Accumulate arrows for this turn
-          const color = CHESS_THEME.arrow[action.intent === 'idea' ? 'idea' : 'threat'];
-          setCustomArrows(prev => [...prev, { startSquare: action.from!, endSquare: action.to!, color }]);
+          dispatch({ type: 'REMOVE_FIRST_ACTION' });
+          timeoutId = setTimeout(() => {
+            dispatch({ type: 'END_PROCESSING_DELAY' });
+          }, 750);
+          // Early return - don't process this action further
+          // Cleanup will be handled by the useEffect's main return statement at the end
+          return () => {
+            if (timeoutId) clearTimeout(timeoutId);
+          };
         }
-      } catch (e: any) {
-        success = false;
-        errorMsg = e.message;
+      }
+      else if (action.type === 'undo') {
+        gameRef.current.undo();
+      }
+      else if (action.type === 'reset') {
+        gameRef.current.reset();
+      }
+      else if (action.type === 'highlight' && action.square) {
+        newSquares = {
+          ...newSquares,
+          [action.square]: { backgroundColor: CHESS_THEME.colors[action.intent!] }
+        };
+        messageIntent = action.intent;
+      }
+      else if (action.type === 'arrow' && action.from && action.to) {
+        const color = CHESS_THEME.arrow[action.intent === 'idea' ? 'idea' : 'threat'];
+        newArrows = [...newArrows, { startSquare: action.from, endSquare: action.to, color }];
+        messageIntent = action.intent;
+      }
+      else if (action.type === 'ghost_move' && action.from && action.to) {
+        // VISUAL ONLY - DO NOT touch gameRef
+        console.log('[Executor] Processing ghost_move:', action.from, '->', action.to);
+        const color = CHESS_THEME.arrow[action.intent === 'idea' ? 'idea' : 'threat'];
+        const arrow = { startSquare: action.from, endSquare: action.to, color };
+        console.log('[Executor] Creating arrow:', arrow);
+        newArrows = [...newArrows, arrow];
+        console.log('[Executor] New arrows state:', newArrows);
+        messageIntent = action.intent;
       }
 
-      // Update UI state
-      setFen(gameRef.current.fen());
+      // ATOMIC UPDATE: Dispatch single action that updates BOTH board and messages
+      dispatch({
+        type: 'PROCESS_ACTION',
+        payload: {
+          fen: gameRef.current.fen(),
+          arrows: newArrows,
+          squares: newSquares,
+          comment: action.comment,
+          intent: messageIntent,
+        },
+      });
 
-      // Post messages for commentary or errors with intent coordination
-      if (success && action.comment) {
-        setMessages(prev => [...prev, {
-          role: 'ai',
-          text: action.comment || '',
-          type: 'move',
-          intent: action.intent
-        }]);
-      } else if (!success) {
-        setMessages(prev => [...prev, { role: 'ai', text: `Coach Error: ${errorMsg}`, type: 'error' }]);
-      }
+      // Remove action from queue
+      dispatch({ type: 'REMOVE_FIRST_ACTION' });
 
-      // Wait for animation, then process next action
-      setTimeout(() => {
-        setIsAnimating(false);
-        setActionQueue(prevQueue => prevQueue.slice(1));
-      }, 1000);
+    } catch (error: any) {
+      console.error("Action failed:", error.message);
+      dispatch({
+        type: 'HANDLE_SEND_ERROR',
+        payload: `State transition failed: ${error.message}`,
+      });
+      dispatch({ type: 'REMOVE_FIRST_ACTION' });
+    }
+
+    // Phase 3: Delay before processing next action (750ms between actions)
+    timeoutId = setTimeout(() => {
+      dispatch({ type: 'END_PROCESSING_DELAY' });
+    }, 750);
+
+    // Cleanup function to prevent memory leaks
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
     };
 
-    processNextAction();
-  }, [actionQueue, isAnimating]);
+  }, [state.actionQueue, state.isAnimating, state.isProcessingDelay, state.boardRenderState.arrows, state.boardRenderState.squares]);
+
+  // Watchdog: Prevent permanently stuck lock
+  useEffect(() => {
+    if (!state.isAnimating) return;
+
+    const watchdogTimer = setTimeout(() => {
+      console.error('[WATCHDOG] Lock stuck for 30s, forcing unlock');
+      dispatch({ type: 'FINISH_ACTION_PROCESSING' });
+      dispatch({ type: 'SET_ACTION_QUEUE', payload: [] });
+      dispatch({ type: 'END_PROCESSING_DELAY' });
+    }, 30000); // 30 second failsafe
+
+    return () => clearTimeout(watchdogTimer);
+  }, [state.isAnimating, dispatch]);
+
+  // Note: Messenger hook removed - reducer now handles atomic board+message updates
 
   return (
-    <div style={{ 
-      display: 'flex', 
-      height: '100vh', 
-      width: '100vw', 
-      backgroundColor: '#1a1a1a', 
-      color: '#ffffff',
-      fontFamily: 'sans-serif',
-      margin: 0,
-      overflow: 'hidden'
-    }}>
-      
+    <div
+      data-testid="game-container"
+      data-fen={state.boardRenderState.fen}
+      style={{
+        display: 'flex',
+        height: '100vh',
+        width: '100vw',
+        backgroundColor: '#1a1a1a',
+        color: '#ffffff',
+        fontFamily: 'sans-serif',
+        margin: 0,
+        overflow: 'hidden',
+        position: 'relative'
+      }}>
+
+      {/* MOCK DATA TOGGLE */}
+      <button
+        onClick={() => setUseMockData(!useMockData)}
+        style={{
+          position: 'absolute',
+          top: '10px',
+          left: '10px',
+          padding: '10px 15px',
+          backgroundColor: useMockData ? '#4CAF50' : '#666',
+          color: 'white',
+          border: 'none',
+          borderRadius: '5px',
+          cursor: 'pointer',
+          fontWeight: 'bold',
+          zIndex: 1000
+        }}
+      >
+        {useMockData ? 'Mock Data ON' : 'Live API'}
+      </button>
+
       {/* LEFT SIDE: CHESSBOARD CONTAINER */}
       <div style={{ 
         flex: 1, 
@@ -302,40 +811,40 @@ function App() {
         <div style={{ width: 'min(70vh, 600px)' }}>
           <Chessboard
             options={{
-              position: fen,
+              position: state.boardRenderState.fen,
               onPieceDrop: onDrop,
               boardOrientation: boardOrientation,
               darkSquareStyle: { backgroundColor: '#779556' },
               lightSquareStyle: { backgroundColor: '#ebecd0' },
-              allowDragging: !isAnimating,
-              squareStyles: customSquareStyles,
-              arrows: customArrows
+              allowDragging: !state.isAnimating,
+              squareStyles: state.boardRenderState.squares,
+              arrows: state.boardRenderState.arrows,
             }}
           />
         </div>
         <button
           onClick={resetGame}
-          disabled={isAnimating}
+          disabled={state.isAnimating}
           style={{
             marginTop: '20px',
             padding: '12px 24px',
-            backgroundColor: isAnimating ? '#2a2a2a' : '#d32f2f',
+            backgroundColor: state.isAnimating ? '#2a2a2a' : '#d32f2f',
             color: 'white',
             border: 'none',
             borderRadius: '8px',
-            cursor: isAnimating ? 'not-allowed' : 'pointer',
+            cursor: state.isAnimating ? 'not-allowed' : 'pointer',
             fontWeight: 'bold',
             fontSize: '0.95rem',
-            opacity: isAnimating ? 0.5 : 1,
+            opacity: state.isAnimating ? 0.5 : 1,
             transition: 'all 0.2s ease'
           }}
           onMouseEnter={(e) => {
-            if (!isAnimating) {
+            if (!state.isAnimating) {
               e.currentTarget.style.backgroundColor = '#b71c1c';
             }
           }}
           onMouseLeave={(e) => {
-            if (!isAnimating) {
+            if (!state.isAnimating) {
               e.currentTarget.style.backgroundColor = '#d32f2f';
             }
           }}
@@ -354,20 +863,53 @@ function App() {
       }}>
         
         {/* CHAT MESSAGES AREA */}
-        <div style={{ 
-          flex: 1, 
-          overflowY: 'auto', 
+        <div style={{
+          flex: 1,
+          overflowY: 'auto',
           padding: '20px',
           display: 'flex',
           flexDirection: 'column',
           gap: '12px'
         }}>
-          {messages.length === 0 && (
+          {/* PREPOPULATED PROMPT PILLS */}
+          {state.messages.length === 0 && (
+            <div style={{
+              display: 'flex',
+              gap: '8px',
+              flexWrap: 'wrap',
+              marginBottom: '16px'
+            }}>
+              {promptPills.map((pill, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    sendMessage(pill.prompt);
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    backgroundColor: '#4a4a4a',
+                    color: '#fff',
+                    border: '1px solid #666',
+                    borderRadius: '16px',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                    fontWeight: '500',
+                    transition: 'background-color 0.2s'
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#5a5a5a'}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4a4a4a'}
+                >
+                  {pill.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {state.messages.length === 0 && (
             <div style={{ color: '#666', textAlign: 'center', marginTop: '20px' }}>
               Ask me about the position or the best next move!
             </div>
           )}
-          {messages.map((m, i) => {
+          {state.messages.map((m, i) => {
             const style = getMessageStyle(m);
             return (
               <div key={i} style={{
@@ -387,8 +929,8 @@ function App() {
               </div>
             );
           })}
-          {isTyping && <div style={{ color: '#aaa', fontSize: '0.8rem', paddingLeft: '5px' }}>Coach is thinking...</div>}
-          {isAnimating && <div style={{ color: '#aaa', fontSize: '0.8rem', paddingLeft: '5px' }}>Playing moves...</div>}
+          {state.isTyping && <div style={{ color: '#aaa', fontSize: '0.8rem', paddingLeft: '5px' }}>Coach is thinking...</div>}
+          {state.isAnimating && <div style={{ color: '#aaa', fontSize: '0.8rem', paddingLeft: '5px' }}>Playing moves...</div>}
           <div ref={messagesEndRef} />
         </div>
 
@@ -408,26 +950,26 @@ function App() {
                 backgroundColor: '#333',
                 color: 'white',
                 outline: 'none',
-                opacity: isAnimating ? 0.5 : 1
+                opacity: state.isAnimating ? 0.5 : 1
               }}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !isAnimating && sendMessage()}
-              placeholder={isAnimating ? "Wait for moves to finish..." : "Ask the coach..."}
-              disabled={isAnimating}
+              onKeyDown={(e) => e.key === 'Enter' && !state.isAnimating && sendMessage()}
+              placeholder={state.isAnimating ? "Wait for moves to finish..." : "Ask the coach..."}
+              disabled={state.isAnimating}
             />
             <button
-              onClick={sendMessage}
-              disabled={isAnimating}
+              onClick={() => sendMessage()}
+              disabled={state.isAnimating}
               style={{
                 padding: '10px 16px',
                 borderRadius: '6px',
                 border: 'none',
-                backgroundColor: isAnimating ? '#555' : '#007bff',
+                backgroundColor: state.isAnimating ? '#555' : '#007bff',
                 color: 'white',
-                cursor: isAnimating ? 'not-allowed' : 'pointer',
+                cursor: state.isAnimating ? 'not-allowed' : 'pointer',
                 fontWeight: 'bold',
-                opacity: isAnimating ? 0.5 : 1
+                opacity: state.isAnimating ? 0.5 : 1
               }}
             >
               Send

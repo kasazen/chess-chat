@@ -29,9 +29,17 @@ class ChatRequest(BaseModel):
     history: List[str] = []  # Array of moves in SAN format
 
 class Action(BaseModel):
-    type: str  # "move", "undo", "reset", "highlight"
+    type: str  # "move", "undo", "reset", "highlight", "arrow", "ghost_move"
     lan: str = ""
-    comment: str
+    san: str = ""
+    square: str = ""
+    from_: str = ""  # Note: renamed to avoid Python keyword
+    to: str = ""
+    intent: str = ""
+    comment: str = ""
+
+    class Config:
+        fields = {'from_': 'from'}  # Map from_ to 'from' in JSON
 
 class ActionScript(BaseModel):
     explanation: str
@@ -86,6 +94,22 @@ def mock_stockfish_analysis(board: chess.Board):
 
 @app.post("/ask", response_model=ActionScript)
 async def ask_coach(request: ChatRequest):
+    # Mock Mode: Use local responses for testing
+    if os.getenv("USE_MOCKS") == "true":
+        mock_file_path = os.path.join(os.path.dirname(__file__), "tests", "mocks", "responses.json")
+        with open(mock_file_path) as f:
+            mock_responses = json.load(f)
+
+        scenario_key = request.message
+
+        if scenario_key in mock_responses:
+            # Use Pydantic models to ensure the response is valid before returning
+            return ActionScript(**mock_responses[scenario_key])
+        else:
+            # Return a default response if the scenario is not found
+            return ActionScript(explanation="Mock scenario not found.", actions=[])
+
+    # Live Mode: Real Gemini API and Stockfish
     engine = None
     best_move = None
     score = 0.0
@@ -107,44 +131,57 @@ async def ask_coach(request: ChatRequest):
             if best_move is None:
                 best_move = "e2e4"  # Default opening move
 
-        # B. Gemini Action Script Generation
+        # B. Gemini Action Script Generation (Turn-Aware)
+        turn = "White" if board.turn == chess.WHITE else "Black"
         move_history = " ".join(request.history) if request.history else "No moves yet"
-        num_moves = len(request.history)
+        best_move_san = board.san(best_move) if isinstance(best_move, chess.Move) else str(best_move)
 
-        prompt = f"""You are a GM Coach. If asked to 'go back' or 'walk through,' generate a sequential list of 'undo' and 'move' actions. Refer to the provided 'history' array to ensure perfect context.
+        prompt = f"""You are a GM Chess Coach. Your primary directive is to be TURN-AWARE. It is currently {turn}'s turn to move.
 
 Position: {request.fen}
-History ({num_moves} moves): {move_history}
-Stockfish: {best_move} (eval {score})
+History: {move_history}
+Stockfish suggests: {best_move_san} (eval {score})
 Question: {request.message}
 
-CRITICAL: Return ONLY valid JSON. Every move or undo mentioned must exist in the actions array.
+CRITICAL RULES:
+1. **TURN AWARENESS**: Only generate a `move` action if it is for {turn}.
+2. **DEMONSTRATION**: If you want to show a move for the OTHER player, you MUST use `ghost_move`, `arrow`, or `highlight`. A `ghost_move` is VISUAL ONLY and does not change the game state.
+3. **NOTATION**: All `move` actions MUST use Standard Algebraic Notation (SAN), e.g., "Nf3", "O-O", "e8=Q".
 
-SCHEMA:
+SCHEMA (MUST be valid JSON):
 {{
-  "explanation": "Natural language response",
+  "explanation": "Conversational coach text",
   "actions": [
-    {{"type": "move", "lan": "e2e4", "comment": "Opening with e4"}},
-    {{"type": "undo", "comment": "Going back one move"}},
-    {{"type": "reset", "comment": "Starting fresh"}},
-    {{"type": "highlight", "lan": "e2e4", "comment": "Highlighting this square"}}
+    {{"type": "move", "san": "Nf3", "comment": "A physical move for {turn}"}},
+    {{"type": "ghost_move", "from": "d7", "to": "d5", "intent": "idea", "comment": "A visual-only move for the other side"}},
+    {{"type": "arrow", "from": "g1", "to": "f3", "intent": "idea", "comment": "Direction indicator"}},
+    {{"type": "highlight", "square": "e4", "intent": "threat", "comment": "Mark important square"}},
+    {{"type": "undo", "comment": "Step back one move"}},
+    {{"type": "reset", "comment": "Return to starting position"}}
   ]
 }}
 
 Action Types:
-- "move": Execute move (MUST include "lan" in Long Algebraic Notation: e2e4, g1f3, b8c6, e7e8q for promotion)
-- "undo": Step back one move (for "go back X", use X consecutive undo actions)
+- "move": Execute ACTUAL move for {turn} (MUST use SAN: "Nf3", "O-O", "e8=Q")
+- "ghost_move": VISUAL ONLY demonstration for opponent (from/to squares, intent required)
+- "arrow": Directional indicator (from/to squares, intent: idea/threat)
+- "highlight": Square emphasis (square name, intent: bestMove/threat/info/idea)
+- "undo": Step back one move
 - "reset": Return to starting position
-- "highlight": Visual emphasis on square/move (optional, for teaching)
+
+Intent Values:
+- "bestMove": Optimal moves (SeaGreen)
+- "threat": Tactical dangers (Firebrick)
+- "info": Educational markers (Yellow)
+- "idea": Strategic concepts (DeepSkyBlue)
 
 Rules:
-1. For "go back X moves": Generate X undo actions
-2. For "what if X instead of Y": Undo to that point, play X, show analysis, then undo X and replay Y
-3. For opening demonstrations: Reset board, then sequential move actions
-4. Each action MUST have "type" and "comment"
-5. Move actions MUST have valid "lan" field
-6. Use move history to calculate exact undo counts
-7. NO text outside JSON structure"""
+1. NEVER use `move` for the opponent - use `ghost_move`, `arrow`, or `highlight` instead
+2. For "go back X moves": Generate X undo actions
+3. For "what if": Undo, show ghost_move/arrow, then restore
+4. For opening demonstrations: If it's {turn}'s turn, use real moves; if showing opponent responses, use ghost_moves
+5. Each action MUST have "type" and appropriate fields
+6. NO text outside JSON structure"""
 
         # Fix: Use 2026 model with JSON mode
         response = client.models.generate_content(

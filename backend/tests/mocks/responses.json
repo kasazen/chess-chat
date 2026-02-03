@@ -1,0 +1,25 @@
+{
+  "Jobava London": {
+    "explanation": "This is the Jobava London System, a sharp and aggressive opening.",
+    "actions": [
+      { "type": "move", "san": "d4", "comment": "Start with d4." },
+      { "type": "move", "san": "Nf6", "comment": "Black develops a knight." },
+      { "type": "move", "san": "Nc3", "comment": "Developing the queen's knight, preparing the London." },
+      { "type": "move", "san": "d5", "comment": "Black challenges the center." },
+      { "type": "move", "san": "Bf4", "comment": "This is the signature move of the London System." }
+    ]
+  },
+  "Threat Detection": {
+    "explanation": "Here, White's queen on d2 creates a threat against the h6 pawn.",
+    "actions": [
+      { "type": "arrow", "from": "d2", "to": "h6", "intent": "threat", "comment": "The queen is eyeing the weak h6 pawn." },
+      { "type": "highlight", "square": "h6", "intent": "threat", "comment": "This square is the target." }
+    ]
+  },
+  "Illegal Move Test": {
+    "explanation": "I am about to suggest an illegal move for White, as it is Black's turn.",
+    "actions": [
+      { "type": "move", "san": "e4", "comment": "This move is illegal because it is Black's turn." }
+    ]
+  }
+}

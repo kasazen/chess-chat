@@ -621,7 +621,9 @@ function App() {
         });
 
         if (!response.ok) {
-          throw new Error('Failed to fetch game');
+          // Extract error detail from backend
+          const errorData = await response.json();
+          throw new Error(errorData.detail || 'Failed to fetch game');
         }
 
         const { pgn, metadata } = await response.json();
@@ -658,14 +660,15 @@ function App() {
           },
         });
 
-      } catch (error) {
+      } catch (error: any) {
         console.error('Failed to fetch game:', error);
+
         dispatch({
           type: 'FINISH_SEND_MESSAGE',
           payload: {
             role: 'ai',
-            text: `Failed to load game. Please check the URL and try again.`,
-            type: 'error',
+            text: error.message || 'Failed to load game. Please try again.',
+            type: 'message',
           },
         });
       }

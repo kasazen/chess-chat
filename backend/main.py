@@ -149,11 +149,10 @@ def mock_stockfish_analysis(board: chess.Board):
 @app.post("/fetch-game")
 async def fetch_game(request: FetchGameRequest):
     """
-    Fetch PGN from chess.com URL
+    Fetch game from chess.com URL
 
-    Supports URLs like:
-    - https://www.chess.com/game/live/164229936148
-    - https://www.chess.com/game/daily/123456
+    Note: Chess.com's callback API doesn't provide PGN directly.
+    Returns instructions for manual PGN download instead.
     """
 
     # Extract game ID from URL
@@ -163,36 +162,18 @@ async def fetch_game(request: FetchGameRequest):
 
     game_type, game_id = match.groups()
 
-    # Fetch from chess.com callback API
-    callback_url = f"https://www.chess.com/callback/{game_type}/game/{game_id}"
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(callback_url, timeout=10.0)
-            response.raise_for_status()
-
-            game_data = response.json()
-            pgn = game_data.get('game', {}).get('pgnHeaders', '')
-
-            if not pgn:
-                raise HTTPException(status_code=404, detail="PGN not found in game data")
-
-            # Extract metadata
-            metadata = {
-                'white': game_data.get('game', {}).get('white', {}).get('username'),
-                'black': game_data.get('game', {}).get('black', {}).get('username'),
-                'result': game_data.get('game', {}).get('result'),
-                'timeClass': game_data.get('game', {}).get('timeClass'),
-            }
-
-            return {
-                'pgn': pgn,
-                'metadata': metadata,
-                'success': True
-            }
-
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch game: {str(e)}")
+    # Return helpful instructions instead
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Chess.com URLs aren't directly supported yet. "
+            "Please download the PGN:\n"
+            "1. Click 'Share' on the game page\n"
+            "2. Click 'Copy PGN'\n"
+            "3. Paste the PGN directly into chat\n\n"
+            "The PGN paste feature works great for game analysis!"
+        )
+    )
 
 @app.post("/ask")
 async def ask_coach(request: ChatRequest):

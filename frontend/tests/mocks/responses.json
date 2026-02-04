@@ -121,5 +121,25 @@
         ]
       }
     ]
+  },
+  "show me basic jobava london": {
+    "explanation": "The Jobava London is a dynamic variant of the London System, defined by the early inclusion of Nc3, prioritizing central control and rapid development. The classic setup is 1. d4, 2. Nc3, and 3. Bf4, aiming for quick piece coordination.",
+    "sequences": [
+      {
+        "label": "Classic Jobava London Setup",
+        "moves": [
+          { "san": "d4", "fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1" },
+          { "san": "d5", "fen": "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq d6 0 2" },
+          { "san": "Nc3", "fen": "rnbqkbnr/ppp1pppp/8/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR b KQkq - 1 2" },
+          { "san": "Nf6", "fen": "rnbqkb1r/ppp1pppp/5n2/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR w KQkq - 2 3" },
+          { "san": "Bf4", "fen": "rnbqkb1r/ppp1pppp/5n2/3p4/3P1B2/2N5/PPP1PPPP/R2QKBNR b KQkq - 3 3" }
+        ]
+      }
+    ],
+    "actions": [
+      { "type": "highlight", "square": "d4", "intent": "neutral", "comment": "Key central square" },
+      { "type": "highlight", "square": "c3", "intent": "development", "comment": "Characteristic early Nc3" },
+      { "type": "highlight", "square": "f4", "intent": "development", "comment": "Bishop development target" }
+    ]
   }
 }

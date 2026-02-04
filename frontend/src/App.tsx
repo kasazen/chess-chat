@@ -553,10 +553,23 @@ function App() {
 
   // 2.1. Handle chip click to navigate to position
   function handleChipClick(chip: MoveChip) {
+    // If animation running, interrupt it
+    if (state.isAnimating) {
+      console.log('[Chip Click] Interrupting animation to explore variation');
+
+      // Clear action queues
+      dispatch({ type: 'SET_ACTION_QUEUE', payload: [] });
+      dispatch({ type: 'SET_UNTRUSTED_QUEUE', payload: [] });
+
+      // Release animation lock
+      dispatch({ type: 'FINISH_ACTION_PROCESSING' });
+      dispatch({ type: 'END_PROCESSING_DELAY' });
+    }
+
     // Snap to absolute position stored in chip
     gameRef.current.load(chip.fen);
 
-    // Update board display
+    // Update board display (clears any animated visuals)
     dispatch({
       type: 'PROCESS_ACTION',
       payload: {
@@ -569,7 +582,7 @@ function App() {
     // Highlight this chip
     setSelectedChipId(chip.id);
 
-    console.log(`[Chip Click] Loaded position: ${chip.notation} -> ${chip.fen}`);
+    console.log(`[Chip Click] Exploring variation: ${chip.notation} @ ${chip.fen}`);
   }
 
   // 3. Handle sending a message to the Backend
@@ -1022,9 +1035,46 @@ function App() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* POSITION EXPLORER INDICATOR */}
+        {selectedChipId && (
+          <div style={{
+            padding: '10px 20px',
+            backgroundColor: '#2a3a4a',
+            borderLeft: '3px solid #4CAF50',
+            borderTop: '1px solid #333',
+            fontSize: '0.85rem',
+            color: '#b0c4de',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}>
+            <span>
+              📍 <strong>Exploring variation</strong> - Click another chip or make a move to continue
+            </span>
+            <button
+              onClick={() => setSelectedChipId(null)}
+              style={{
+                padding: '4px 10px',
+                backgroundColor: '#3a4a5a',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                fontWeight: '500',
+                transition: 'background-color 0.2s'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#4a5a6a'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3a4a5a'}
+            >
+              Clear Selection
+            </button>
+          </div>
+        )}
+
         {/* CHAT INPUT AREA */}
-        <div style={{ 
-          padding: '20px', 
+        <div style={{
+          padding: '20px',
           borderTop: '1px solid #333',
           backgroundColor: '#1a1a1a'
         }}>

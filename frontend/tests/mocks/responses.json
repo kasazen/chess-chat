@@ -96,5 +96,30 @@
         ]
       }
     ]
+  },
+  "Combined Test": {
+    "explanation": "The f7 pawn is particularly weak in this position. Here are your attacking options:",
+    "actions": [
+      { "type": "highlight", "square": "f7", "intent": "threat", "comment": "Weak pawn - typical target" },
+      { "type": "arrow", "from": "d1", "to": "f7", "intent": "threat", "comment": "Queen has direct pressure" }
+    ],
+    "sequences": [
+      {
+        "label": "Direct Attack: Bc4 + Qf3",
+        "moves": [
+          { "san": "Bc4", "fen": "rnbqkbnr/pppp1ppp/8/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR b KQkq - 1 2" },
+          { "san": "d6", "fen": "rnbqkbnr/ppp2ppp/3p4/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq - 0 3" },
+          { "san": "Qf3", "fen": "rnbqkbnr/ppp2ppp/3p4/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR b KQkq - 1 3" }
+        ]
+      },
+      {
+        "label": "Scholar's Mate Threat",
+        "moves": [
+          { "san": "Qh5", "fen": "rnbqkbnr/pppp1ppp/8/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2" },
+          { "san": "Nc6", "fen": "r1bqkbnr/pppp1ppp/2n5/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 2 3" },
+          { "san": "Bc4", "fen": "r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3" }
+        ]
+      }
+    ]
   }
 }

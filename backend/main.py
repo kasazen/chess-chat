@@ -1,13 +1,15 @@
 import os
 import json
+import re
 import chess
 import chess.engine
 from google import genai  # Modern 2026 SDK
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, TypedDict
+from typing import List, Dict, TypedDict, Optional
 from dotenv import load_dotenv
+import httpx
 
 load_dotenv()
 # Fix: Using the new GenAI Client
@@ -27,6 +29,7 @@ class ChatRequest(BaseModel):
     fen: str
     message: str
     history: List[str] = []  # Array of moves in SAN format
+    pgn: Optional[str] = None  # Full game PGN for post-game analysis
 
 class Action(BaseModel):
     type: str  # "move", "undo", "reset", "highlight", "arrow", "ghost_move"
@@ -58,6 +61,9 @@ class EnhancedActionScript(BaseModel):
     explanation: str
     sequences: List[Dict] = []  # List of MoveSequenceSchema dicts
     actions: List[Action] = []  # Kept for backward compatibility
+
+class FetchGameRequest(BaseModel):
+    url: str
 
 def calculate_fens_for_sequence(moves: List[str], starting_fen: str) -> List[Dict[str, str]]:
     """
@@ -140,6 +146,54 @@ def mock_stockfish_analysis(board: chess.Board):
 
     return best_move, score
 
+@app.post("/fetch-game")
+async def fetch_game(request: FetchGameRequest):
+    """
+    Fetch PGN from chess.com URL
+
+    Supports URLs like:
+    - https://www.chess.com/game/live/164229936148
+    - https://www.chess.com/game/daily/123456
+    """
+
+    # Extract game ID from URL
+    match = re.search(r'chess\.com/game/(live|daily)/(\d+)', request.url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid chess.com URL format")
+
+    game_type, game_id = match.groups()
+
+    # Fetch from chess.com callback API
+    callback_url = f"https://www.chess.com/callback/{game_type}/game/{game_id}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(callback_url, timeout=10.0)
+            response.raise_for_status()
+
+            game_data = response.json()
+            pgn = game_data.get('game', {}).get('pgnHeaders', '')
+
+            if not pgn:
+                raise HTTPException(status_code=404, detail="PGN not found in game data")
+
+            # Extract metadata
+            metadata = {
+                'white': game_data.get('game', {}).get('white', {}).get('username'),
+                'black': game_data.get('game', {}).get('black', {}).get('username'),
+                'result': game_data.get('game', {}).get('result'),
+                'timeClass': game_data.get('game', {}).get('timeClass'),
+            }
+
+            return {
+                'pgn': pgn,
+                'metadata': metadata,
+                'success': True
+            }
+
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch game: {str(e)}")
+
 @app.post("/ask")
 async def ask_coach(request: ChatRequest):
     # Mock Mode: Use local responses for testing
@@ -219,7 +273,71 @@ async def ask_coach(request: ChatRequest):
         move_history = " ".join(request.history) if request.history else "No moves yet"
         best_move_san = board.san(best_move) if isinstance(best_move, chess.Move) else str(best_move)
 
-        prompt = f"""You are an expert GM Chess Coach providing strategic guidance to help students learn and improve.
+        # Check if PGN provided for post-game analysis
+        if request.pgn:
+            prompt = f"""You are an expert GM Chess Coach analyzing a complete game.
+
+**GAME PGN**
+{request.pgn}
+
+**CURRENT POSITION**
+FEN: {request.fen}
+Turn: {turn}
+Full Move History: {move_history}
+Stockfish Analysis: {best_move_san} (eval {score:.2f})
+
+**STUDENT QUESTION**
+"{request.message}"
+
+**ANALYSIS GUIDANCE**
+This is post-game analysis. Use ALL THREE interaction modes to maximize learning:
+
+1. **SEQUENCES for ALTERNATIVES** - Show better moves at critical positions
+   - When pointing out mistake (e.g., "13...Kd7 was bad"), provide sequences with alternatives
+   - Example: Show "13...Qc7" sequence and "13...O-O-O" sequence as better options
+
+2. **ACTIONS for HIGHLIGHTING** - Show why a move was problematic
+   - Highlight mistake squares (exposed king, hanging pieces)
+   - Arrows showing attack vectors or threats created by mistake
+   - Example: Highlight d7 square, arrow from Qb3 to d7 showing pressure
+
+3. **SEQUENCES for CONTINUATIONS** - Show what could have happened
+   - After showing better alternative, demonstrate 2-3 moves of resulting play
+   - Shows the concrete benefit of the better move
+   - Example: "13...Qc7" sequence continues with "14.Rac1 O-O 15.h3" showing safe development
+
+**Analysis Depth (Context-Aware):**
+- Broad question ("where did I go wrong?") → 1-2 most critical mistakes with all three modes
+- Specific move ("was 13...Kd7 a mistake?") → Deep dive on that move only
+- Comprehensive ("show all mistakes") → 3-5 significant errors with focused analysis
+- Position-specific ("what should I do here?") → Analyze just that position
+
+**Key Principle:** Make mistakes tangible through visual feedback (actions) and explorable through alternatives (sequences with continuations)
+
+**RESPONSE FORMAT (JSON)**
+{{
+  "explanation": "Your coaching explanation in 2-4 sentences",
+  "sequences": [
+    {{
+      "label": "Better: 13...Qc7 (safe king + development)",
+      "moves": ["Qc7", "Rac1", "O-O", "h3", "Bh5"]
+    }}
+  ],
+  "actions": [
+    {{"type": "highlight", "square": "d7", "intent": "threat", "comment": "King exposed"}},
+    {{"type": "arrow", "from": "b3", "to": "d7", "intent": "threat", "comment": "Queen pressure"}}
+  ]
+}}
+
+**CONSTRAINTS**
+- sequences array: 0-4 items (empty if not applicable)
+- actions array: 0-6 items (empty if not applicable)
+- DON'T put same moves in both sequences and actions
+- Each sequence: 3-8 moves, alternating White/Black
+- All moves must be valid from current position
+- NO text outside JSON structure"""
+        else:
+            prompt = f"""You are an expert GM Chess Coach providing strategic guidance to help students learn and improve.
 
 **CURRENT POSITION**
 FEN: {request.fen}

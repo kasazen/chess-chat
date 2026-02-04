@@ -239,6 +239,9 @@ function App() {
   const [input, setInput] = useState('');
   const [useMockData, setUseMockData] = useState(false);
   const [selectedChipId, setSelectedChipId] = useState<string | null>(null);
+  const [currentGamePgn, setCurrentGamePgn] = useState<string | null>(null);
+  const [gameMoves, setGameMoves] = useState<string[]>([]);
+  const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -590,6 +593,148 @@ function App() {
     const messageToSend = messageOverride || input;
     if (!messageToSend.trim() || state.isAnimating) return;
 
+    // NEW: Detect chess.com URL
+    const chesscomUrlMatch = messageToSend.match(/chess\.com\/game\/(live|daily)\/\d+/);
+
+    // NEW: Detect PGN format (starts with [Event or 1. or contains multiple moves)
+    const isPgn = /^\[Event\s|^1\.\s|\d+\.\s+[a-h]|[KQRBN][a-h1-8]/m.test(messageToSend)
+      && messageToSend.split(/\d+\./).length > 3; // Multiple moves present
+
+    // Handle chess.com URL
+    if (chesscomUrlMatch) {
+      const url = chesscomUrlMatch[0].startsWith('http')
+        ? chesscomUrlMatch[0]
+        : `https://${chesscomUrlMatch[0]}`;
+
+      dispatch({
+        type: 'START_SEND_MESSAGE',
+        payload: { userMessage: { role: 'user', text: messageToSend } },
+      });
+
+      setInput('');
+
+      try {
+        const response = await fetch('http://localhost:8000/fetch-game', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch game');
+        }
+
+        const { pgn, metadata } = await response.json();
+
+        // Load PGN into chess.js
+        gameRef.current.loadPgn(pgn);
+        const moves = gameRef.current.history();
+
+        // Store moves and PGN
+        setGameMoves(moves);
+        setCurrentGamePgn(pgn);
+        setCurrentMoveIndex(0);
+
+        // Reset to starting position
+        gameRef.current.reset();
+
+        // Update board to show starting position
+        dispatch({
+          type: 'PROCESS_ACTION',
+          payload: {
+            fen: gameRef.current.fen(),
+            arrows: [],
+            squares: {},
+          },
+        });
+
+        // Show success message
+        dispatch({
+          type: 'FINISH_SEND_MESSAGE',
+          payload: {
+            role: 'ai',
+            text: `Game loaded! ${metadata.white} vs ${metadata.black}. You can now navigate through the game or ask questions like "where did I go wrong?" or "what was the critical mistake?"`,
+            type: 'message',
+          },
+        });
+
+      } catch (error) {
+        console.error('Failed to fetch game:', error);
+        dispatch({
+          type: 'FINISH_SEND_MESSAGE',
+          payload: {
+            role: 'ai',
+            text: `Failed to load game. Please check the URL and try again.`,
+            type: 'error',
+          },
+        });
+      }
+
+      return;
+    }
+
+    // Handle PGN pasted directly
+    if (isPgn) {
+      dispatch({
+        type: 'START_SEND_MESSAGE',
+        payload: { userMessage: { role: 'user', text: messageToSend } },
+      });
+
+      setInput('');
+
+      try {
+        // Load PGN directly into chess.js
+        gameRef.current.loadPgn(messageToSend);
+        const moves = gameRef.current.history();
+
+        // Store moves and PGN
+        setGameMoves(moves);
+        setCurrentGamePgn(messageToSend);
+        setCurrentMoveIndex(0);
+
+        // Reset to starting position
+        gameRef.current.reset();
+
+        // Update board
+        dispatch({
+          type: 'PROCESS_ACTION',
+          payload: {
+            fen: gameRef.current.fen(),
+            arrows: [],
+            squares: {},
+          },
+        });
+
+        // Extract metadata from PGN headers
+        const whiteMatch = messageToSend.match(/\[White\s+"([^"]+)"\]/);
+        const blackMatch = messageToSend.match(/\[Black\s+"([^"]+)"\]/);
+        const white = whiteMatch ? whiteMatch[1] : 'White';
+        const black = blackMatch ? blackMatch[1] : 'Black';
+
+        dispatch({
+          type: 'FINISH_SEND_MESSAGE',
+          payload: {
+            role: 'ai',
+            text: `Game loaded! ${white} vs ${black}. You can now navigate through the game or ask questions like "where did I go wrong?" or "what was the critical mistake?"`,
+            type: 'message',
+          },
+        });
+
+      } catch (error) {
+        console.error('Failed to load PGN:', error);
+        dispatch({
+          type: 'FINISH_SEND_MESSAGE',
+          payload: {
+            role: 'ai',
+            text: `Failed to load PGN. Please check the format and try again.`,
+            type: 'error',
+          },
+        });
+      }
+
+      return;
+    }
+
     const userMsg: Message = { role: 'user', text: messageToSend };
     const currentInput = messageToSend;
     const currentFen = gameRef.current.fen();
@@ -632,7 +777,8 @@ function App() {
           body: JSON.stringify({
             fen: currentFen,
             message: currentInput,
-            history: moveHistory
+            history: moveHistory,
+            ...(currentGamePgn && { pgn: currentGamePgn })  // Include PGN if game loaded
           }),
         });
 
@@ -939,6 +1085,143 @@ function App() {
         >
           🔄 Reset Board
         </button>
+
+        {/* GAME NAVIGATION CONTROLS */}
+        {currentGamePgn && (
+          <div style={{
+            marginTop: '20px',
+            padding: '12px',
+            backgroundColor: '#1a1a1a',
+            borderRadius: '8px',
+            border: '1px solid #333',
+            display: 'flex',
+            gap: '10px',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexWrap: 'wrap'
+          }}>
+            <button
+              onClick={() => {
+                gameRef.current.reset();
+                setCurrentMoveIndex(0);
+                dispatch({
+                  type: 'PROCESS_ACTION',
+                  payload: {
+                    fen: gameRef.current.fen(),
+                    arrows: [],
+                    squares: {},
+                  },
+                });
+              }}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: '#2a3a4a',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.85rem',
+                fontWeight: '500'
+              }}
+            >
+              ⏮ Start
+            </button>
+
+            <button
+              onClick={() => {
+                if (currentMoveIndex > 0) {
+                  gameRef.current.undo();
+                  setCurrentMoveIndex(currentMoveIndex - 1);
+                  dispatch({
+                    type: 'PROCESS_ACTION',
+                    payload: {
+                      fen: gameRef.current.fen(),
+                      arrows: [],
+                      squares: {},
+                    },
+                  });
+                }
+              }}
+              disabled={currentMoveIndex === 0}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: currentMoveIndex === 0 ? '#1a1a1a' : '#2a3a4a',
+                color: currentMoveIndex === 0 ? '#666' : '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: currentMoveIndex === 0 ? 'not-allowed' : 'pointer',
+                fontSize: '0.85rem',
+                fontWeight: '500'
+              }}
+            >
+              ◀ Back
+            </button>
+
+            <span style={{ color: '#888', fontSize: '0.85rem', padding: '0 8px' }}>
+              Move {currentMoveIndex} / {gameMoves.length}
+            </span>
+
+            <button
+              onClick={() => {
+                if (currentMoveIndex < gameMoves.length) {
+                  const nextMove = gameMoves[currentMoveIndex];
+                  gameRef.current.move(nextMove);
+                  setCurrentMoveIndex(currentMoveIndex + 1);
+                  dispatch({
+                    type: 'PROCESS_ACTION',
+                    payload: {
+                      fen: gameRef.current.fen(),
+                      arrows: [],
+                      squares: {},
+                    },
+                  });
+                }
+              }}
+              disabled={currentMoveIndex >= gameMoves.length}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: currentMoveIndex >= gameMoves.length ? '#1a1a1a' : '#2a3a4a',
+                color: currentMoveIndex >= gameMoves.length ? '#666' : '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: currentMoveIndex >= gameMoves.length ? 'not-allowed' : 'pointer',
+                fontSize: '0.85rem',
+                fontWeight: '500'
+              }}
+            >
+              ▶ Forward
+            </button>
+
+            <button
+              onClick={() => {
+                setCurrentGamePgn(null);
+                setGameMoves([]);
+                setCurrentMoveIndex(0);
+                gameRef.current.reset();
+                dispatch({
+                  type: 'PROCESS_ACTION',
+                  payload: {
+                    fen: gameRef.current.fen(),
+                    arrows: [],
+                    squares: {},
+                  },
+                });
+              }}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: '#3a2a2a',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.85rem',
+                fontWeight: '500'
+              }}
+            >
+              Clear Game
+            </button>
+          </div>
+        )}
       </div>
 
       {/* RIGHT SIDE: CHAT UI */}

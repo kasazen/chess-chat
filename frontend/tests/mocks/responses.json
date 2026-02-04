@@ -37,5 +37,35 @@
       { "type": "undo", "comment": "Undoing your last move" },
       { "type": "move", "san": "Nf3", "comment": "Consider developing your knight instead" }
     ]
+  },
+  "Multiple Sequences Test": {
+    "explanation": "Here are two strategic approaches for White:",
+    "sequences": [
+      {
+        "label": "Aggressive: King's Gambit",
+        "moves": ["e4", "e5", "f4"]
+      },
+      {
+        "label": "Solid: Italian Game",
+        "moves": ["e4", "e5", "Nf3", "Nc6", "Bc4"]
+      }
+    ]
+  },
+  "Show me opening plans": {
+    "explanation": "Here are three classical opening approaches for White:",
+    "sequences": [
+      {
+        "label": "King's Pawn Opening: Central Control",
+        "moves": ["e4", "e5", "Nf3", "Nc6", "Bb5"]
+      },
+      {
+        "label": "Queen's Pawn Opening: Solid Development",
+        "moves": ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4"]
+      },
+      {
+        "label": "English Opening: Flexible System",
+        "moves": ["c4", "e5", "Nc3", "Nf6", "g3"]
+      }
+    ]
   }
 }

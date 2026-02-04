@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useReducer, useCallback } from 'react';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 import mockResponses from '../tests/mocks/responses.json';
+import { MoveSequenceComponent } from './components/MoveSequence';
+import type { MoveSequence, MoveChip } from './components/MoveSequence';
 
 const CHESS_THEME = {
   colors: {
@@ -21,6 +23,7 @@ interface Message {
   text: string;
   type?: 'explanation' | 'move' | 'error';
   intent?: 'bestMove' | 'threat' | 'info' | 'idea';
+  sequences?: MoveSequence[];  // NEW: Attached move sequences
 }
 
 interface Action {
@@ -36,6 +39,10 @@ interface Action {
 interface ActionScript {
   explanation: string;
   actions: Action[];
+  sequences?: Array<{
+    label: string;
+    moves: Array<{ san: string; fen: string }>;
+  }>;
 }
 
 // Consolidated Board Render State (Section 2.1)
@@ -59,7 +66,7 @@ interface AppState {
 // Reducer action types
 type ReducerAction =
   | { type: 'START_SEND_MESSAGE'; payload: { userMessage: Message } }
-  | { type: 'RECEIVE_AI_EXPLANATION'; payload: { explanation: string; actions: Action[] } }
+  | { type: 'RECEIVE_AI_EXPLANATION'; payload: { explanation: string; actions?: Action[]; sequences?: MoveSequence[] } }
   | { type: 'PROCESS_ACTION'; payload: { fen: string; arrows: Array<{ startSquare: string; endSquare: string; color: string }>; squares: Record<string, React.CSSProperties>; comment?: string; intent?: Action['intent'] } }
   | { type: 'START_PROCESSING_DELAY' }
   | { type: 'END_PROCESSING_DELAY' }
@@ -90,11 +97,12 @@ function appReducer(state: AppState, action: ReducerAction): AppState {
           {
             role: 'ai',
             text: action.payload.explanation,
-            type: 'explanation'
+            type: 'explanation',
+            sequences: action.payload.sequences  // NEW: Attach sequences
           }
         ],
         isTyping: false,
-        untrustedActionQueue: action.payload.actions,
+        untrustedActionQueue: action.payload.actions || [],
       };
 
     case 'SET_UNTRUSTED_QUEUE':
@@ -229,6 +237,7 @@ function App() {
   const [boardOrientation] = useState<'white' | 'black'>('white');
   const [input, setInput] = useState('');
   const [useMockData, setUseMockData] = useState(false);
+  const [selectedChipId, setSelectedChipId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -541,6 +550,27 @@ function App() {
     });
   }
 
+  // 2.1. Handle chip click to navigate to position
+  function handleChipClick(chip: MoveChip) {
+    // Snap to absolute position stored in chip
+    gameRef.current.load(chip.fen);
+
+    // Update board display
+    dispatch({
+      type: 'PROCESS_ACTION',
+      payload: {
+        fen: chip.fen,
+        arrows: [],
+        squares: {},
+      },
+    });
+
+    // Highlight this chip
+    setSelectedChipId(chip.id);
+
+    console.log(`[Chip Click] Loaded position: ${chip.notation} -> ${chip.fen}`);
+  }
+
   // 3. Handle sending a message to the Backend
   const sendMessage = useCallback(async (messageOverride?: string) => {
     const messageToSend = messageOverride || input;
@@ -599,17 +629,50 @@ function App() {
       console.log('[sendMessage] Received data:', data);
 
       // Validate response structure
-      if (!data.explanation || !data.actions) {
+      if (!data.explanation) {
         console.error('[sendMessage] Invalid response structure:', data);
         throw new Error('Invalid response format from backend');
       }
 
+      // Process sequences if present (new format)
+      let processedSequences: MoveSequence[] | undefined;
+      if (data.sequences && data.sequences.length > 0) {
+        processedSequences = data.sequences.map((seq: any, seqIdx: number) => {
+          const chips = seq.moves.map((move: any, moveIdx: number) => {
+            // Calculate move number and color
+            const fullMoveNumber = Math.floor(moveIdx / 2) + 1;
+            const isWhiteMove = moveIdx % 2 === 0;
+
+            return {
+              id: `seq-${seqIdx}-chip-${moveIdx}`,
+              notation: isWhiteMove
+                ? `${fullMoveNumber}. ${move.san}`  // "1. e4"
+                : move.san,                          // "Nf6"
+              fen: move.fen,
+              moveNumber: fullMoveNumber,
+              color: isWhiteMove ? 'white' : 'black'
+            } as MoveChip;
+          });
+
+          return {
+            id: `seq-${seqIdx}`,
+            label: seq.label,
+            chips: chips
+          } as MoveSequence;
+        });
+      }
+
+      console.log('[sendMessage] Processed sequences:', processedSequences);
       console.log('[sendMessage] Actions received:', data.actions);
 
-      // Dispatch AI explanation and actions
+      // Dispatch AI explanation with sequences and/or actions
       dispatch({
         type: 'RECEIVE_AI_EXPLANATION',
-        payload: { explanation: data.explanation, actions: data.actions || [] }
+        payload: {
+          explanation: data.explanation,
+          sequences: processedSequences,
+          actions: data.actions || []
+        }
       });
 
     } catch (error: any) {
@@ -912,20 +975,33 @@ function App() {
           {state.messages.map((m, i) => {
             const style = getMessageStyle(m);
             return (
-              <div key={i} style={{
-                alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                backgroundColor: style.backgroundColor,
-                padding: '10px 14px',
-                borderRadius: '12px',
-                maxWidth: '85%',
-                lineHeight: '1.4',
-                fontSize: '0.95rem',
-                wordWrap: 'break-word',
-                fontStyle: style.fontStyle,
-                borderLeft: style.borderLeft
-              }}>
-                <strong>{m.role === 'user' ? 'You' : 'Coach'}:</strong><br />
-                {m.text}
+              <div key={i}>
+                {/* Message bubble */}
+                <div style={{
+                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  backgroundColor: style.backgroundColor,
+                  padding: '10px 14px',
+                  borderRadius: '12px',
+                  maxWidth: '85%',
+                  lineHeight: '1.4',
+                  fontSize: '0.95rem',
+                  wordWrap: 'break-word',
+                  fontStyle: style.fontStyle,
+                  borderLeft: style.borderLeft
+                }}>
+                  <strong>{m.role === 'user' ? 'You' : 'Coach'}:</strong><br />
+                  {m.text}
+                </div>
+
+                {/* NEW: Render move sequences if present */}
+                {m.sequences && m.sequences.map((seq) => (
+                  <MoveSequenceComponent
+                    key={seq.id}
+                    sequence={seq}
+                    selectedChipId={selectedChipId}
+                    onChipClick={handleChipClick}
+                  />
+                ))}
               </div>
             );
           })}

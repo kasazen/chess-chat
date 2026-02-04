@@ -6,7 +6,7 @@ from google import genai  # Modern 2026 SDK
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict, TypedDict
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,6 +44,54 @@ class Action(BaseModel):
 class ActionScript(BaseModel):
     explanation: str
     actions: List[Action]
+
+# New types for move sequences
+class MoveInSequence(TypedDict):
+    san: str
+    fen: str
+
+class MoveSequenceSchema(TypedDict):
+    label: str
+    moves: List[MoveInSequence]
+
+class EnhancedActionScript(BaseModel):
+    explanation: str
+    sequences: List[Dict] = []  # List of MoveSequenceSchema dicts
+    actions: List[Action] = []  # Kept for backward compatibility
+
+def calculate_fens_for_sequence(moves: List[str], starting_fen: str) -> List[Dict[str, str]]:
+    """
+    Calculate FEN for each move in sequence.
+
+    Args:
+        moves: List of SAN moves ["e4", "e5", "Nf3"]
+        starting_fen: Starting board position
+
+    Returns:
+        List of moves with FENs: [
+            {"san": "e4", "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"},
+            {"san": "e5", "fen": "..."}
+        ]
+    """
+    board = chess.Board(starting_fen)
+    moves_with_fens = []
+
+    for san_move in moves:
+        try:
+            # Apply move to board
+            move = board.parse_san(san_move)
+            board.push(move)
+
+            # Store move with resulting FEN
+            moves_with_fens.append({
+                "san": san_move,
+                "fen": board.fen()
+            })
+        except (chess.InvalidMoveError, chess.IllegalMoveError) as e:
+            print(f"Warning: Invalid move {san_move}, skipping: {e}")
+            continue
+
+    return moves_with_fens
 
 def mock_stockfish_analysis(board: chess.Board):
     """Fallback evaluator when Stockfish is unavailable or hits errors"""
@@ -92,7 +140,7 @@ def mock_stockfish_analysis(board: chess.Board):
 
     return best_move, score
 
-@app.post("/ask", response_model=ActionScript)
+@app.post("/ask")
 async def ask_coach(request: ChatRequest):
     # Mock Mode: Use local responses for testing
     if os.getenv("USE_MOCKS") == "true":
@@ -103,11 +151,46 @@ async def ask_coach(request: ChatRequest):
         scenario_key = request.message
 
         if scenario_key in mock_responses:
-            # Use Pydantic models to ensure the response is valid before returning
-            return ActionScript(**mock_responses[scenario_key])
+            # Return mock response in new format (supports both old and new)
+            mock_data = mock_responses[scenario_key]
+            # Process sequences if present in mock data
+            if 'sequences' in mock_data:
+                processed_sequences = []
+                for seq in mock_data['sequences']:
+                    if 'moves' in seq and seq['moves']:
+                        # Check if moves already have FENs
+                        if isinstance(seq['moves'][0], dict) and 'fen' in seq['moves'][0]:
+                            # Already has FENs
+                            processed_sequences.append(seq)
+                        else:
+                            # Calculate FENs
+                            moves_with_fens = calculate_fens_for_sequence(
+                                seq['moves'],
+                                request.fen
+                            )
+                            processed_sequences.append({
+                                "label": seq['label'],
+                                "moves": moves_with_fens
+                            })
+                return {
+                    "explanation": mock_data.get('explanation', ''),
+                    "sequences": processed_sequences,
+                    "actions": mock_data.get('actions', [])
+                }
+            else:
+                # Old format mock data
+                return {
+                    "explanation": mock_data.get('explanation', ''),
+                    "sequences": [],
+                    "actions": mock_data.get('actions', [])
+                }
         else:
             # Return a default response if the scenario is not found
-            return ActionScript(explanation="Mock scenario not found.", actions=[])
+            return {
+                "explanation": "Mock scenario not found.",
+                "sequences": [],
+                "actions": []
+            }
 
     # Live Mode: Real Gemini API and Stockfish
     engine = None
@@ -136,52 +219,40 @@ async def ask_coach(request: ChatRequest):
         move_history = " ".join(request.history) if request.history else "No moves yet"
         best_move_san = board.san(best_move) if isinstance(best_move, chess.Move) else str(best_move)
 
-        prompt = f"""You are a GM Chess Coach. Your primary directive is to be TURN-AWARE. It is currently {turn}'s turn to move.
+        prompt = f"""You are a GM Chess Coach providing strategic guidance. It is currently {turn}'s turn to move.
 
 Position: {request.fen}
 History: {move_history}
 Stockfish suggests: {best_move_san} (eval {score})
 Question: {request.message}
 
-CRITICAL RULES:
-1. **TURN AWARENESS**: Only generate a `move` action if it is for {turn}.
-2. **DEMONSTRATION**: If you want to show a move for the OTHER player, you MUST use `ghost_move`, `arrow`, or `highlight`. A `ghost_move` is VISUAL ONLY and does not change the game state.
-3. **NOTATION**: All `move` actions MUST use Standard Algebraic Notation (SAN), e.g., "Nf3", "O-O", "e8=Q".
+When analyzing positions, you can provide move sequences to illustrate strategic plans:
+- Suggest 1-3 labeled move sequences (e.g., "Aggressive plan", "Solid defense")
+- Each sequence should contain 3-8 moves showing a complete strategic idea
+- Label each sequence with its strategic theme
+- Moves should be in standard algebraic notation (SAN): e4, Nf3, O-O, etc.
 
 SCHEMA (MUST be valid JSON):
 {{
-  "explanation": "Conversational coach text",
-  "actions": [
-    {{"type": "move", "san": "Nf3", "comment": "A physical move for {turn}"}},
-    {{"type": "ghost_move", "from": "d7", "to": "d5", "intent": "idea", "comment": "A visual-only move for the other side"}},
-    {{"type": "arrow", "from": "g1", "to": "f3", "intent": "idea", "comment": "Direction indicator"}},
-    {{"type": "highlight", "square": "e4", "intent": "threat", "comment": "Mark important square"}},
-    {{"type": "undo", "comment": "Step back one move"}},
-    {{"type": "reset", "comment": "Return to starting position"}}
+  "explanation": "Conversational coach text explaining the position",
+  "sequences": [
+    {{
+      "label": "Aggressive plan: Attack the kingside",
+      "moves": ["e4", "e5", "Nf3", "Nc6", "Bc4"]
+    }},
+    {{
+      "label": "Solid plan: Control the center",
+      "moves": ["d4", "Nf6", "c4", "e6", "Nc3"]
+    }}
   ]
 }}
 
-Action Types:
-- "move": Execute ACTUAL move for {turn} (MUST use SAN: "Nf3", "O-O", "e8=Q")
-- "ghost_move": VISUAL ONLY demonstration for opponent (from/to squares, intent required)
-- "arrow": Directional indicator (from/to squares, intent: idea/threat)
-- "highlight": Square emphasis (square name, intent: bestMove/threat/info/idea)
-- "undo": Step back one move
-- "reset": Return to starting position
-
-Intent Values:
-- "bestMove": Optimal moves (SeaGreen)
-- "threat": Tactical dangers (Firebrick)
-- "info": Educational markers (Yellow)
-- "idea": Strategic concepts (DeepSkyBlue)
-
 Rules:
-1. NEVER use `move` for the opponent - use `ghost_move`, `arrow`, or `highlight` instead
-2. For "go back X moves": Generate X undo actions
-3. For "what if": Undo, show ghost_move/arrow, then restore
-4. For opening demonstrations: If it's {turn}'s turn, use real moves; if showing opponent responses, use ghost_moves
-5. Each action MUST have "type" and appropriate fields
-6. NO text outside JSON structure"""
+1. Each sequence should alternate between White and Black moves
+2. Start sequences from the current position
+3. Moves must be valid SAN notation
+4. Keep sequences focused on one strategic idea
+5. NO text outside JSON structure"""
 
         # Fix: Use 2026 model with JSON mode
         response = client.models.generate_content(
@@ -202,42 +273,42 @@ Rules:
 
         action_script = json.loads(response_text)
 
-        # Ensure actions array exists
-        if not action_script.get('actions') or len(action_script['actions']) == 0:
-            action_script['actions'] = [
-                {
-                    "type": "move",
-                    "lan": str(best_move),
-                    "comment": "Stockfish recommends this move."
-                }
-            ]
-
-        # Validate each action
-        for action in action_script['actions']:
-            if 'type' not in action:
-                action['type'] = 'move' if action.get('lan') else 'reset'
-            if 'lan' not in action:
-                action['lan'] = ""
-            if 'comment' not in action:
-                action['comment'] = ""
+        # Process sequences if present (new format)
+        processed_sequences = []
+        if 'sequences' in action_script and action_script['sequences']:
+            for seq in action_script['sequences']:
+                moves_with_fens = calculate_fens_for_sequence(
+                    seq.get('moves', []),
+                    request.fen
+                )
+                processed_sequences.append({
+                    "label": seq.get('label', 'Move sequence'),
+                    "moves": moves_with_fens
+                })
 
         # Ensure explanation exists
         if 'explanation' not in action_script:
             action_script['explanation'] = 'Analysis complete.'
 
-        return ActionScript(**action_script)
+        # Return new format with sequences
+        return {
+            "explanation": action_script['explanation'],
+            "sequences": processed_sequences,
+            "actions": action_script.get('actions', [])  # For backward compatibility
+        }
     except Exception as e:
-        # Return a fallback action script on error
-        return ActionScript(
-            explanation=f"Error: {str(e)}",
-            actions=[
-                Action(
-                    type="move",
-                    lan=str(best_move) if 'best_move' in locals() else "e2e4",
-                    comment="Unable to generate full analysis. Try again."
-                )
+        # Return a fallback response on error
+        return {
+            "explanation": f"Error: {str(e)}",
+            "sequences": [],
+            "actions": [
+                {
+                    "type": "move",
+                    "lan": str(best_move) if 'best_move' in locals() else "e2e4",
+                    "comment": "Unable to generate full analysis. Try again."
+                }
             ]
-        )
+        }
     finally:
         # Ensure Stockfish is properly closed even if there's an error
         if engine is not None:

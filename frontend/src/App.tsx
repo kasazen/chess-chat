@@ -4,6 +4,7 @@ import { Chess } from 'chess.js';
 import mockResponses from '../tests/mocks/responses.json';
 import { MoveSequenceComponent } from './components/MoveSequence';
 import type { MoveSequence, MoveChip } from './components/MoveSequence';
+import { calculateFensForSequence } from './utils/fenCalculator';
 
 const CHESS_THEME = {
   colors: {
@@ -638,16 +639,27 @@ function App() {
       let processedSequences: MoveSequence[] | undefined;
       if (data.sequences && data.sequences.length > 0) {
         processedSequences = data.sequences.map((seq: any, seqIdx: number) => {
-          const chips = seq.moves.map((move: any, moveIdx: number) => {
-            // Calculate move number and color
+          // ✅ CALCULATE FENS IF NEEDED
+          let movesWithFens: Array<{ san: string; fen: string }>;
+
+          if (seq.moves.length > 0 && typeof seq.moves[0] === 'string') {
+            // String array - calculate FENs
+            console.log(`[sendMessage] Calculating FENs for sequence: ${seq.label}`);
+            movesWithFens = calculateFensForSequence(seq.moves, gameRef.current.fen());
+          } else {
+            // Object array - use as-is
+            movesWithFens = seq.moves;
+          }
+
+          const chips = movesWithFens.map((move, moveIdx) => {
             const fullMoveNumber = Math.floor(moveIdx / 2) + 1;
             const isWhiteMove = moveIdx % 2 === 0;
 
             return {
               id: `seq-${seqIdx}-chip-${moveIdx}`,
               notation: isWhiteMove
-                ? `${fullMoveNumber}. ${move.san}`  // "1. e4"
-                : move.san,                          // "Nf6"
+                ? `${fullMoveNumber}. ${move.san}`
+                : move.san,
               fen: move.fen,
               moveNumber: fullMoveNumber,
               color: isWhiteMove ? 'white' : 'black'
